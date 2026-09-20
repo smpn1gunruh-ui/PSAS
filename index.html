@@ -1,139 +1,800 @@
 <!doctype html>
 <html lang="id">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ujian Akhir Semester - Informatika Kelas 7</title>
-  <script src="tailwind.js"></script>
-  <style>
-    body, html { height: 100%; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-    .question-card { transition: all 0.3s ease; }
-    .option-button { transition: all 0.2s ease; }
-    .option-button:hover { transform: translateX(4px); }
-    .timer-warning { animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.7;} }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ujian Akhir Semester - Informatika Kelas 7</title>
+<script src="tailwind.js">
+function renderLogin(c){ return syncStartup(c); }
+
+renderLogin(document.getElementById("app"));
+</script>
+<style>
+  body,html{height:100%;margin:0;padding:0;font-family:Inter,system-ui,sans-serif}
+  .question-card{transition:all .3s ease}.option-button{transition:all .2s ease}
+  .option-button:hover{transform:translateX(4px)}
+  .timer-warning{animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+  .tab-active{background:#2563eb;color:#fff}
+  .modal{background:rgba(15,23,42,.55)}
+</style>
+
+<style id="exam-fullscreen-style">
+html,body,#app{
+  width:100%;
+  min-width:100%;
+  min-height:100%;
+  margin:0;
+  padding:0;
+}
+body{
+  overflow-x:hidden;
+}
+body.exam-mode{
+  overflow:hidden;
+  user-select:none;
+}
+#examLockOverlay{
+  position:fixed;
+  inset:0;
+  z-index:2147483647;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  background:rgba(15,23,42,.97);
+  color:white;
+  text-align:center;
+  padding:24px;
+}
+#examLockOverlay.show{
+  display:flex;
+}
+.exam-lock-card{
+  width:min(92vw,460px);
+  border:1px solid rgba(255,255,255,.15);
+  border-radius:20px;
+  padding:28px;
+  background:#0f172a;
+  box-shadow:0 20px 60px rgba(0,0,0,.45);
+}
+</style>
+
 </head>
 <body class="h-full bg-sky-50">
-  <div id="app" class="h-full"></div>
+<div id="syncStatus" class="text-xs text-slate-500 text-center py-1"></div><div id="app" class="h-full"></div>
+<script>
+// ============================================================
+// UJIAN ONLINE - ADMIN + SISWA + TOKEN + LAPORAN
+// Data disimpan di localStorage browser.
+// ============================================================
 
-  <script>
-    // ===================== KONFIGURASI =====================
-    const config = {
-      exam_title: "Ujian Akhir Semester - Informatika Kelas 7",
-      school_name: "SMP Negeri 1 Gunungguruh",
-      subject_info: "Materi Bab 1–6",
-      background_color: "#f0f9ff"
+const config = {
+  // Setelah Apps Script selesai dibuat, tempel URL /exec di sini.
+  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbzTeqbdq1ZHMCGPMu3SoPU7-iPqJs-SEFjT7p92tFlR-rhAgwEzUkEKmBmrMRcjJsY/exec",
+  exam_title:"Ujian Akhir Semester - Informatika Kelas 7",
+  school_name:"SMP Negeri 1 Gunungguruh",
+  subject_info:"Materi Bab 1–6",
+  background_color:"#f0f9ff",
+  duration:600,
+  kkm:75,
+  adminUser:"admin",
+  adminPassword:"admin123"
+};
+
+function apiWrite(type,data={}){
+  if(!config.googleSheetWebAppUrl)return Promise.resolve();
+  return fetch(config.googleSheetWebAppUrl,{
+    method:"POST",
+    mode:"no-cors",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({type,data})
+  }).catch(e=>console.warn("Gagal mengirim ke Spreadsheet:",e));
+}
+
+function syncFromSpreadsheet(){
+  return new Promise((resolve,reject)=>{
+    const cb="dbTikCallback_"+Date.now();
+    const script=document.createElement("script");
+    const timer=setTimeout(()=>{
+      cleanup();
+      reject(new Error("Timeout mengambil data dari Spreadsheet."));
+    },15000);
+
+    function cleanup(){
+      clearTimeout(timer);
+      try{delete window[cb]}catch{}
+      script.remove();
+    }
+
+    window[cb]=(res)=>{
+      cleanup();
+      if(!res || !res.status || !res.data){
+        reject(new Error(res?.message||"Spreadsheet mengembalikan data tidak valid."));
+        return;
+      }
+
+      const d=res.data;
+      const students=(d.students||[]).map(x=>({
+        id:String(x.ID||"").trim(),
+        name:String(x.Nama||"").trim(),
+        className:String(x.Kelas||"").trim()
+      })).filter(x=>x.id);
+
+      const questions=(d.questions||[]).map(x=>({
+        id:String(x["ID Soal"]||("Q-"+x.No)).trim(),
+        no:Number(x.No)||0,
+        question:String(x.Soal||""),
+        options:[
+          String(x["Option A"]||""),
+          String(x["Option B"]||""),
+          String(x["Option C"]||""),
+          String(x["Option D"]||"")
+        ],
+        correct:Math.max(0,Math.min(3,Number(x.Kunci)||0)),
+        weight:Math.max(1,Number(x.Bobot)||1),
+        chapter:String(x.Bab||"")
+      })).filter(x=>x.question);
+
+      const tokens=(d.tokens||[]).map(x=>({
+        code:String(x.Token||"").trim().toUpperCase(),
+        studentId:String(x["ID Siswa"]||"").trim(),
+        active:String(x.Aktif).toLowerCase()==="true" || x.Aktif===true,
+        used:String(x.Terpakai).toLowerCase()==="true" || x.Terpakai===true,
+        createdAt:x["Waktu Dibuat"]||"",
+        usedAt:x["Waktu Digunakan"]||""
+      })).filter(x=>x.code);
+
+      save("studentsDB",students);
+      save("questionsDB",questions);
+      save("tokensDB",tokens);
+      localStorage.setItem("dbLastSync",new Date().toISOString());
+      resolve({students,questions,tokens});
     };
 
-    // ===================== SOAL GABUNGAN BAB 1–6 =====================
-    let questions = [
-      // BAB 1
-      {question:"Apa yang dimaksud dengan berpikir komputasional?",options:["Cara berpikir menggunakan komputer untuk menyelesaikan masalah","Cara berpikir logis dan sistematis dalam memecahkan masalah","Cara berpikir untuk menghafal kode program","Cara berpikir dengan meniru komputer"],correct:1},
-      {question:"Langkah pertama dalam berpikir komputasional adalah...",options:["Abstraksi","Pengenalan pola","Dekomposisi","Membuat algoritma"],correct:2},
-      {question:"Apa yang dimaksud dengan dekomposisi?",options:["Mengabaikan hal-hal yang tidak penting","Menggabungkan semua bagian masalah","Mengenali pola-pola dalam masalah","Memecah masalah besar menjadi bagian-bagian kecil"],correct:3},
-      {question:"Tujuan dari mengenali pola adalah...",options:["Membuat algoritma lebih panjang","Menemukan kesamaan untuk mempermudah penyelesaian masalah","Menghapus data yang tidak relevan","Meningkatkan kecepatan komputer"],correct:1},
-      {question:"Abstraksi dalam berpikir komputasional berarti...",options:["Menghapus semua data","Menambahkan detail kecil","Mengabaikan detail tidak penting dan fokus pada inti masalah","Membuat algoritma tanpa berpikir"],correct:2},
+    script.onerror=()=>{
+      cleanup();
+      reject(new Error("Tidak dapat terhubung ke Google Apps Script. Pastikan Web App dideploy sebagai Anyone dan URL /exec benar."));
+    };
 
-      // BAB 2
-      {question:"Komponen utama sistem komputer terdiri dari...",options:["Hardware, Software, Brainware","Monitor, Printer, Mouse","CPU, Keyboard, Internet","Data, File, Jaringan"],correct:0},
-      {question:"Yang termasuk perangkat keras adalah...",options:["Microsoft Word","Google Chrome","RAM","Windows"],correct:2},
-      {question:"Perangkat lunak yang digunakan untuk menulis teks adalah...",options:["Notepad","Scanner","Keyboard","Flashdisk"],correct:0},
-      {question:"Orang yang mengoperasikan komputer disebut...",options:["Hardware","Brainware","Software","Userware"],correct:1},
-      {question:"Fungsi utama CPU adalah...",options:["Menyimpan data","Mengolah data","Menampilkan hasil","Mencetak dokumen"],correct:1},
+    script.src=config.googleSheetWebAppUrl+"?action=getData&callback="+encodeURIComponent(cb)+"&_="+Date.now();
+    document.body.appendChild(script);
+  });
+}
 
-      // BAB 3
-      {question:"Data adalah...",options:["Informasi yang sudah diolah","Kumpulan fakta mentah yang belum diolah","Kesimpulan dari informasi","Hasil akhir dari pengolahan"],correct:1},
-      {question:"Informasi dapat dikatakan berkualitas jika...",options:["Tidak relevan","Terlambat","Akurat dan tepat waktu","Asal dibuat"],correct:2},
-      {question:"Contoh data kuantitatif adalah...",options:["Warna baju","Jenis kelamin","Usia siswa","Nama sekolah"],correct:2},
-      {question:"Fungsi tabel dalam pengolahan data adalah...",options:["Menampilkan gambar","Menyusun data agar mudah dibaca","Menghapus data","Mengacak data"],correct:1},
-      {question:"Microsoft Excel digunakan untuk...",options:["Mengedit video","Mengolah data angka","Mendesain poster","Menulis cerita"],correct:1},
+function syncStartup(){
+  const el=document.getElementById("syncStatus");
+  if(el)el.textContent="Menghubungkan ke Google Spreadsheet...";
+  return syncFromSpreadsheet().then(d=>{
+    if(el)el.textContent=`✓ Terhubung ke Spreadsheet • ${d.students.length} siswa • ${d.questions.length} soal • ${d.tokens.length} token`;
+    return d;
+  }).catch(e=>{
+    console.warn(e);
+    if(el)el.textContent="⚠ Spreadsheet tidak terhubung — data lokal digunakan";
+    return null;
+  });
+}
 
-      // BAB 4
-      {question:"Algoritma adalah...",options:["Bahasa pemrograman komputer","Langkah-langkah logis untuk menyelesaikan masalah","Data yang sudah diolah","Program komputer"],correct:1},
-      {question:"Flowchart digunakan untuk...",options:["Menggambar dekorasi","Membuat diagram alur pemecahan masalah","Mendesain gambar","Menyimpan data"],correct:1},
-      {question:"Simbol belah ketupat pada flowchart berarti...",options:["Mulai/Selesai","Proses","Keputusan (percabangan)","Input/Output"],correct:2},
-      {question:"Pseudocode berarti...",options:["Kode rahasia","Kode tiruan yang menjelaskan langkah algoritma","Bahasa pemrograman","Perintah dalam komputer"],correct:1},
-      {question:"Contoh algoritma di kehidupan sehari-hari adalah...",options:["Menonton film","Langkah-langkah membuat mie instan","Menyapu rumah","Tidur di malam hari"],correct:1},
+function apiCheckToken(token,studentId){
+  return new Promise((resolve,reject)=>{
+    if(!config.googleSheetWebAppUrl)return resolve(null);
+    const cb="dbTikToken_"+Date.now();
+    const script=document.createElement("script");
+    const timer=setTimeout(()=>{cleanup();reject(new Error("Timeout cek token"));},10000);
+    function cleanup(){clearTimeout(timer);try{delete window[cb]}catch{}script.remove();}
+    window[cb]=res=>{cleanup();if(!res||!res.status)return reject(new Error(res?.message||"Respons token tidak valid"));resolve(res.data||null);};
+    script.onerror=()=>{cleanup();reject(new Error("Gagal terhubung ke Spreadsheet"));};
+    script.src=config.googleSheetWebAppUrl+
+      "?action=checkToken&token="+encodeURIComponent(token)+
+      "&studentId="+encodeURIComponent(studentId)+
+      "&callback="+encodeURIComponent(cb)+"&_="+Date.now();
+    document.body.appendChild(script);
+  });
+}
 
-      // BAB 5
-      {question:"Internet merupakan...",options:["Jaringan komputer yang sangat besar dan saling terhubung","Perangkat keras komputer","Aplikasi chat","Perangkat lunak pengolah kata"],correct:0},
-      {question:"WWW adalah singkatan dari...",options:["World Wide Web","World Work Web","Wide World Word","Web World Work"],correct:0},
-      {question:"Fungsi utama mesin pencari adalah...",options:["Mengirim pesan","Menyimpan dokumen","Mencari informasi di internet","Membuat virus"],correct:2},
-      {question:"Contoh alamat email yang benar adalah...",options:["andi.gmail.com","andi@gmail.com","andi@gmail","www.andi.com"],correct:1},
-      {question:"Yang termasuk media sosial adalah...",options:["Microsoft Word","Instagram","Excel","Paint"],correct:1},
 
-      // BAB 6
-      {question:"Etika digital berarti...",options:["Sopan santun dalam menggunakan teknologi dan internet","Cara memperbaiki komputer","Menulis kode program","Menghapus data"],correct:0},
-      {question:"Mengunggah foto orang lain tanpa izin termasuk...",options:["Etika baik","Privasi","Pelanggaran privasi","Kegiatan sosial"],correct:2},
-      {question:"Hoaks adalah...",options:["Berita palsu untuk menipu orang","Informasi resmi","Pesan pribadi","Data ilmiah"],correct:0},
-      {question:"Spam adalah...",options:["Email berulang tanpa izin","Program antivirus","Jenis data","Aplikasi chat"],correct:0},
-      {question:"Cara melindungi akun adalah...",options:["Membagikan password","Menggunakan kata sandi kuat","Mengklik semua tautan","Menulis password di status"],correct:1}
-    ];
+const defaultQuestions = [
+["Apa yang dimaksud dengan berpikir komputasional?",["Cara berpikir menggunakan komputer untuk menyelesaikan masalah","Cara berpikir logis dan sistematis dalam memecahkan masalah","Cara berpikir untuk menghafal kode program","Cara berpikir dengan meniru komputer"],1,"Bab 1"],
+["Langkah pertama dalam berpikir komputasional adalah...",["Abstraksi","Pengenalan pola","Dekomposisi","Membuat algoritma"],2,"Bab 1"],
+["Apa yang dimaksud dengan dekomposisi?",["Mengabaikan hal-hal yang tidak penting","Menggabungkan semua bagian masalah","Mengenali pola-pola dalam masalah","Memecah masalah besar menjadi bagian-bagian kecil"],3,"Bab 1"],
+["Tujuan dari mengenali pola adalah...",["Membuat algoritma lebih panjang","Menemukan kesamaan untuk mempermudah penyelesaian masalah","Menghapus data yang tidak relevan","Meningkatkan kecepatan komputer"],1,"Bab 1"],
+["Abstraksi dalam berpikir komputasional berarti...",["Menghapus semua data","Menambahkan detail kecil","Mengabaikan detail tidak penting dan fokus pada inti masalah","Membuat algoritma tanpa berpikir"],2,"Bab 1"],
+["Komponen utama sistem komputer terdiri dari...",["Hardware, Software, Brainware","Monitor, Printer, Mouse","CPU, Keyboard, Internet","Data, File, Jaringan"],0,"Bab 2"],
+["Yang termasuk perangkat keras adalah...",["Microsoft Word","Google Chrome","RAM","Windows"],2,"Bab 2"],
+["Perangkat lunak yang digunakan untuk menulis teks adalah...",["Notepad","Scanner","Keyboard","Flashdisk"],0,"Bab 2"],
+["Orang yang mengoperasikan komputer disebut...",["Hardware","Brainware","Software","Userware"],1,"Bab 2"],
+["Fungsi utama CPU adalah...",["Menyimpan data","Mengolah data","Menampilkan hasil","Mencetak dokumen"],1,"Bab 2"],
+["Data adalah...",["Informasi yang sudah diolah","Kumpulan fakta mentah yang belum diolah","Kesimpulan dari informasi","Hasil akhir dari pengolahan"],1,"Bab 3"],
+["Informasi dapat dikatakan berkualitas jika...",["Tidak relevan","Terlambat","Akurat dan tepat waktu","Asal dibuat"],2,"Bab 3"],
+["Contoh data kuantitatif adalah...",["Warna baju","Jenis kelamin","Usia siswa","Nama sekolah"],2,"Bab 3"],
+["Fungsi tabel dalam pengolahan data adalah...",["Menampilkan gambar","Menyusun data agar mudah dibaca","Menghapus data","Mengacak data"],1,"Bab 3"],
+["Microsoft Excel digunakan untuk...",["Mengedit video","Mengolah data angka","Mendesain poster","Menulis cerita"],1,"Bab 3"],
+["Algoritma adalah...",["Bahasa pemrograman komputer","Langkah-langkah logis untuk menyelesaikan masalah","Data yang sudah diolah","Program komputer"],1,"Bab 4"],
+["Flowchart digunakan untuk...",["Menggambar dekorasi","Membuat diagram alur pemecahan masalah","Mendesain gambar","Menyimpan data"],1,"Bab 4"],
+["Simbol belah ketupat pada flowchart berarti...",["Mulai/Selesai","Proses","Keputusan (percabangan)","Input/Output"],2,"Bab 4"],
+["Pseudocode berarti...",["Kode rahasia","Kode tiruan yang menjelaskan langkah algoritma","Bahasa pemrograman","Perintah dalam komputer"],1,"Bab 4"],
+["Contoh algoritma di kehidupan sehari-hari adalah...",["Menonton film","Langkah-langkah membuat mie instan","Menyapu rumah","Tidur di malam hari"],1,"Bab 4"],
+["Internet merupakan...",["Jaringan komputer yang sangat besar dan saling terhubung","Perangkat keras komputer","Aplikasi chat","Perangkat lunak pengolah kata"],0,"Bab 5"],
+["WWW adalah singkatan dari...",["World Wide Web","World Work Web","Wide World Word","Web World Work"],0,"Bab 5"],
+["Fungsi utama mesin pencari adalah...",["Mengirim pesan","Menyimpan dokumen","Mencari informasi di internet","Membuat virus"],2,"Bab 5"],
+["Contoh alamat email yang benar adalah...",["andi.gmail.com","andi@gmail.com","andi@gmail","www.andi.com"],1,"Bab 5"],
+["Yang termasuk media sosial adalah...",["Microsoft Word","Instagram","Excel","Paint"],1,"Bab 5"],
+["Etika digital berarti...",["Sopan santun dalam menggunakan teknologi dan internet","Cara memperbaiki komputer","Menulis kode program","Menghapus data"],0,"Bab 6"],
+["Mengunggah foto orang lain tanpa izin termasuk...",["Etika baik","Privasi","Pelanggaran privasi","Kegiatan sosial"],2,"Bab 6"],
+["Hoaks adalah...",["Berita palsu untuk menipu orang","Informasi resmi","Pesan pribadi","Data ilmiah"],0,"Bab 6"],
+["Spam adalah...",["Email berulang tanpa izin","Program antivirus","Jenis data","Aplikasi chat"],0,"Bab 6"],
+["Cara melindungi akun adalah...",["Membagikan password","Menggunakan kata sandi kuat","Mengklik semua tautan","Menulis password di status"],1,"Bab 6"]
+];
 
-    // ===================== ACAK SOAL =====================
-    function shuffleArray(arr){
-      for(let i=arr.length-1;i>0;i--){
-        const j=Math.floor(Math.random()*(i+1));
-        [arr[i],arr[j]]=[arr[j],arr[i]];
-      }
-      return arr;
+const defaultStudents = [];
+
+function uid(prefix="ID"){return prefix+"-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,7).toUpperCase()}
+function esc(v){return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
+function shuffle(a){a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function formatTime(s){const m=Math.floor(s/60),sec=s%60;return `${m}:${String(sec).padStart(2,"0")}`}
+function now(){return new Date().toLocaleString("id-ID")}
+function load(key,fallback){try{const x=JSON.parse(localStorage.getItem(key));return x??fallback}catch{return fallback}}
+function save(key,val){localStorage.setItem(key,JSON.stringify(val))}
+function csvCell(v){return `"${String(v??"").replace(/"/g,'""')}"`}
+function downloadText(filename,text,type="text/csv;charset=utf-8"){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+text],{type}));a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function parseCSV(text){
+  const rows=[];let row=[],cell="",q=false;
+  for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];
+    if(c=='"'&&q&&n=='"'){cell+='"';i++}
+    else if(c=='"')q=!q;
+    else if(c==","&&!q){row.push(cell);cell=""}
+    else if((c=="\n"||c=="\r")&&!q){if(c=="\r"&&n=="\n")i++;row.push(cell);if(row.some(x=>x.trim()!=""))rows.push(row);row=[];cell=""}
+    else cell+=c;
+  }
+  if(cell!==""||row.length){row.push(cell);if(row.some(x=>x.trim()!=""))rows.push(row)}
+  return rows;
+}
+
+if(!localStorage.getItem("questionsDB")) save("questionsDB",[]);
+if(!localStorage.getItem("studentsDB")) save("studentsDB",[]);
+if(localStorage.getItem("examDataVersion")!=="2"){
+  save("questionsDB",[]);
+  save("studentsDB",[]);
+  save("tokensDB",[]);
+  save("resultsDB",[]);
+  localStorage.setItem("examDataVersion","2");
+}
+if(!localStorage.getItem("tokensDB")) save("tokensDB",[]);
+if(!localStorage.getItem("resultsDB")) save("resultsDB",[]);
+
+let questions=load("questionsDB",[]);
+let state={screen:"start",studentId:"",studentName:"",studentClass:"",token:"",examQuestions:[],answers:[],current:0,timeLeft:config.duration,timer:null,locked:false,final:null,adminTab:"dashboard"};
+
+function getStudents(){return load("studentsDB",[])}
+function getQuestions(){return load("questionsDB",[])}
+function getTokens(){return load("tokensDB",[])}
+function getResults(){return load("resultsDB",[])}
+function tokenValid(token,studentName,studentClass){
+  const list=getTokens(); const t=list.find(x=>x.code.toUpperCase()===token.toUpperCase()&&x.active&&!x.used);
+  if(!t)return null;
+  const st=getStudents().find(x=>x.name.toLowerCase()===studentName.toLowerCase()&&x.className===studentClass);
+  if(t.studentId && (!st || t.studentId!==st.id))return null;
+  return t;
+}
+function normalizeToken(v){return String(v||"").trim().toUpperCase().replace(/\s+/g,"")}
+function generateToken(){return "UJ-"+Math.random().toString(36).slice(2,6).toUpperCase()+"-"+Math.random().toString(36).slice(2,6).toUpperCase()}
+
+function startTimer(){
+  clearInterval(state.timer);
+  state.timer=setInterval(()=>{
+    state.timeLeft--;
+    const el=document.getElementById("timer");
+    if(el){el.textContent=formatTime(state.timeLeft);if(state.timeLeft<=60)el.classList.add("timer-warning")}
+    if(state.timeLeft<=0){clearInterval(state.timer);submitExam()}
+  },1000);
+}
+async function goFullScreen(){if(document.documentElement.requestFullscreen)try{await document.documentElement.requestFullscreen()}catch{}}
+document.addEventListener("fullscreenchange",()=>{
+  if(!document.fullscreenElement&&state.screen==="exam"&&!state.final){
+    state.locked=true;clearInterval(state.timer);render();
+  }
+});
+function selectAnswer(i){if(!state.locked){state.answers[state.current]=i;render()}}
+function navigate(d){if(!state.locked){const n=state.current+d;if(n>=0&&n<state.examQuestions.length)state.current=n;render()}}
+function scoreData(){
+  let correct=0,wrong=0,blank=0;
+  state.answers.forEach((a,i)=>{if(a===null||a===undefined)blank++;else if(a===state.examQuestions[i].correct)correct++;else wrong++});
+  const totalWeight=state.examQuestions.reduce((a,q)=>a+(q.weight??1),0);
+  const earnedWeight=state.examQuestions.reduce((a,q,i)=>a+(state.answers[i]===q.correct?(q.weight??1):0),0);
+  const score=totalWeight?Math.round((earnedWeight/totalWeight)*100):0;
+  return {score,correct,wrong,blank,total:state.examQuestions.length,totalWeight,earnedWeight,kkm:config.kkm,passed:score>=config.kkm};
+}
+function submitExam(){
+  if(state.final)return;
+  clearInterval(state.timer);
+  const d=scoreData();
+  const matchedStudent=getStudents().find(s=>s.name.toLowerCase()===state.studentName.toLowerCase()&&s.className===state.studentClass);
+  const result={
+    id:uid("R"),studentId:state.studentId||matchedStudent?.id||"",name:state.studentName,className:state.studentClass,token:state.token,
+    date:now(),exam:config.exam_title,score:d.score,correct:d.correct,wrong:d.wrong,
+    blank:d.blank,total:d.total,totalWeight:d.totalWeight,earnedWeight:d.earnedWeight,kkm:config.kkm,passed:d.passed,
+    details:state.examQuestions.map((q,i)=>({question:q.question,answer:state.answers[i],correct:q.correct,options:q.options,chapter:q.chapter,weight:q.weight??1}))
+  };
+  const results=getResults();results.push(result);save("resultsDB",results);
+  const tokens=getTokens();const ti=tokens.findIndex(t=>t.code.toUpperCase()===state.token.toUpperCase());
+  if(ti>=0){tokens[ti].used=true;tokens[ti].usedAt=now();tokens[ti].usedBy=state.studentName;save("tokensDB",tokens)}
+  state.final=result;state.screen="result";render();
+  if(config.googleSheetWebAppUrl){
+    apiWrite("result",result)
+      .then(()=>console.log("Hasil tersimpan di Google Spreadsheet."))
+      .catch(e=>console.warn("Sinkronisasi hasil gagal:",e));
+  }
+}
+
+function startExam(student, tok){
+  const all=getQuestions();
+  if(!all.length)return alert("Belum ada soal. Silakan minta admin menginput soal.");
+  state.studentId=student.id; state.studentName=student.name; state.studentClass=student.className; state.token=tok.code;
+  state.examQuestions=shuffle(all).map(q=>{
+    const pairs=q.options.map((text,i)=>({text,isCorrect:i===q.correct}));
+    const so=shuffle(pairs);
+    return {...q,options:so.map(x=>x.text),correct:so.findIndex(x=>x.isCorrect)};
+  });
+  state.answers=new Array(state.examQuestions.length).fill(null);
+  state.current=0;state.timeLeft=config.duration;state.locked=false;state.final=null;
+  goFullScreen();state.screen="exam";startTimer();render();
+}
+
+function loginAdmin(){
+  const u=document.getElementById("adminUser").value,p=document.getElementById("adminPass").value;
+  if(u===config.adminUser&&p===config.adminPassword){state.screen="admin";render()}
+  else alert("Username/password admin salah.");
+}
+
+function render(){
+  const app=document.getElementById("app");
+  if(state.screen==="start")return renderStart(app);
+  if(state.screen==="exam")return renderExam(app);
+  if(state.screen==="result")return renderResult(app);
+  if(state.screen==="admin")return renderAdmin(app);
+  if(state.screen==="adminLogin")return renderAdminLogin(app);
+}
+
+function renderStart(app){
+  app.innerHTML=`<div class="min-h-full flex items-center justify-center bg-[${config.background_color}] p-4">
+    <div class="max-w-md w-full bg-white p-8 rounded-2xl shadow-xl">
+      <div class="text-center mb-6"><h1 class="text-2xl font-bold">${esc(config.exam_title)}</h1><p>${esc(config.school_name)}</p><p class="text-slate-600">${esc(config.subject_info)}</p></div>
+      <div class="space-y-4">
+        <div><label class="font-semibold">Nama Siswa</label><input id="name" class="w-full border rounded-lg p-3 mt-1" placeholder="Nama lengkap" autocomplete="off"></div>
+        <div><label class="font-semibold">NIS</label><input id="nis" class="w-full border rounded-lg p-3 mt-1" placeholder="Nomor Induk Siswa" autocomplete="off"></div>
+        <div><label class="font-semibold">Kelas</label><div id="classDisplay" class="w-full border rounded-lg p-3 mt-1 bg-slate-100 text-slate-500">Otomatis berdasarkan NIS</div><input id="class" type="hidden"></div>
+        <div id="studentStatus" class="text-xs text-slate-500 -mt-2"></div>
+        <div><label class="font-semibold">Token Ujian</label><input id="token" class="w-full border rounded-lg p-3 mt-1 uppercase" placeholder="Masukkan token" autocomplete="off"></div>
+        <div id="startError" class="hidden text-sm bg-red-50 text-red-700 p-3 rounded-lg"></div>
+        <button id="start" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">Mulai Ujian</button>
+        <button id="admin" class="w-full border border-slate-300 py-2 rounded-lg">Panel Admin</button>
+      </div>
+      <p class="text-xs text-slate-500 mt-5 text-center">KKM: ${config.kkm} • Durasi: ${Math.floor(config.duration/60)} menit</p>
+    </div></div>`;
+
+  const nis=document.getElementById("nis"), name=document.getElementById("name"), cls=document.getElementById("class"), cd=document.getElementById("classDisplay"), status=document.getElementById("studentStatus"), err=document.getElementById("startError");
+  function lookup(){
+    const s=getStudents().find(x=>String(x.id).trim().toLowerCase()===nis.value.trim().toLowerCase());
+    if(s){
+      name.value=s.name; cls.value=s.className; cd.textContent=s.className; cd.className="w-full border rounded-lg p-3 mt-1 bg-green-50 text-green-700 font-bold";
+      status.textContent="✓ NIS ditemukan. Nama dan kelas sesuai data siswa."; status.className="text-xs text-green-600 -mt-2";
+      return s;
     }
-    function shuffleQuestions(){
-      questions=shuffleArray(questions.map(q=>{
-        const opts=q.options.map((o,i)=>({text:o,isCorrect:i===q.correct}));
-        const shuffled=shuffleArray(opts);
-        return {question:q.question,options:shuffled.map(o=>o.text),correct:shuffled.findIndex(o=>o.isCorrect)};
-      }));
+    cls.value=""; cd.textContent="Otomatis berdasarkan NIS"; cd.className="w-full border rounded-lg p-3 mt-1 bg-slate-100 text-slate-500";
+    status.textContent=nis.value.trim()?"NIS tidak ditemukan di Data Siswa.":""; status.className="text-xs text-red-600 -mt-2";
+    return null;
+  }
+  nis.oninput=lookup;
+
+  document.getElementById("start").onclick=async()=>{
+    err.classList.add("hidden");
+    const btn=document.getElementById("start");
+    btn.disabled=true; btn.textContent="Menghubungkan ke Spreadsheet...";
+
+    try{
+      // Ambil data terbaru tepat sebelum ujian dimulai.
+      await syncFromSpreadsheet();
+
+      const s=lookup(), t=normalizeToken(document.getElementById("token").value);
+      if(!s)throw new Error("NIS tidak ditemukan di Data Siswa.");
+      if(!t)throw new Error("Token wajib diisi.");
+
+      const online=await apiCheckToken(t,s.id);
+      if(online && online.valid===false)throw new Error(online.message||"Token tidak valid.");
+
+      const tok=tokenValid(t,s.name,s.className);
+      if(!tok)throw new Error("Token tidak valid, tidak aktif, atau sudah digunakan.");
+
+      startExam(s,tok);
+    }catch(e){
+      err.textContent=e.message||"Gagal terhubung ke Spreadsheet.";
+      err.classList.remove("hidden");
+    }finally{
+      btn.disabled=false; btn.textContent="Mulai Ujian";
     }
+  };
+  document.getElementById("admin").onclick=()=>{state.screen="adminLogin";render()};
+}
 
-    // ===================== STATE =====================
-    let state={screen:'start',studentName:'',studentClass:'',current:0,answers:new Array(questions.length).fill(null),timeLeft:600,timer:null,locked:false};
+function renderExam(app){
+  const q=state.examQuestions[state.current];
+  app.innerHTML=`<div class="flex flex-col h-full bg-[${config.background_color}]">
+    <div class="p-4 bg-white shadow flex justify-between items-center">
+      <div><h2 class="font-bold">${esc(state.studentName)}</h2><p class="text-sm">Kelas ${esc(state.studentClass)} • Soal ${state.current+1}/${state.examQuestions.length}</p></div>
+      <div class="text-right"><div id="timer" class="font-bold text-blue-600 text-xl">${formatTime(state.timeLeft)}</div><p class="text-sm text-slate-600">Waktu tersisa</p></div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-4">${state.locked?`<div class="text-center mt-20 text-red-600 font-bold text-xl">Ujian dikunci karena keluar dari fullscreen.</div>`:
+    `<div class="max-w-3xl mx-auto bg-white p-6 rounded-xl shadow question-card">
+      <div class="flex mb-4"><span class="bg-blue-500 text-white px-3 py-1 rounded-lg mr-3 font-bold">${state.current+1}</span><p class="font-semibold">${esc(q.question)}</p></div>
+      <div class="space-y-3">${q.options.map((opt,i)=>{const sel=state.answers[state.current]===i;return `<button class="option-button w-full text-left p-3 border-2 rounded-lg ${sel?"bg-green-500 text-white border-green-600":"border-slate-300"}" data-i="${i}"><span class="font-bold">${String.fromCharCode(65+i)}.</span> ${esc(opt)}</button>`}).join("")}</div>
+    </div>
+    <div class="max-w-3xl mx-auto flex justify-between mt-6">${state.current?`<button id="prev" class="px-4 py-2 rounded-lg border border-blue-600 text-blue-700">← Sebelumnya</button>`:`<span></span>`}
+      ${state.current===state.examQuestions.length-1?`<button id="submit" class="px-6 py-2 bg-green-600 text-white font-bold rounded-lg">Selesai & Kirim</button>`:`<button id="next" class="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg">Selanjutnya →</button>`}</div>`}</div></div>`;
+  document.querySelectorAll("[data-i]").forEach(b=>b.onclick=()=>selectAnswer(+b.dataset.i));
+  document.getElementById("prev")?.addEventListener("click",()=>navigate(-1));
+  document.getElementById("next")?.addEventListener("click",()=>navigate(1));
+  document.getElementById("submit")?.addEventListener("click",()=>{if(confirm("Yakin ingin mengakhiri ujian?"))submitExam()});
+}
 
-    // ===================== UTILITAS =====================
-    function formatTime(s){const m=Math.floor(s/60),sec=s%60;return `${m}:${sec.toString().padStart(2,'0')}`;}
-    function startTimer(){state.timer=setInterval(()=>{state.timeLeft--;const t=document.getElementById('timer');if(t){t.textContent=formatTime(state.timeLeft);if(state.timeLeft<=60)t.classList.add('timer-warning');}if(state.timeLeft<=0){clearInterval(state.timer);submitExam();}},1000);}
-    async function goFullScreen(){if(document.documentElement.requestFullscreen){await document.documentElement.requestFullscreen();}}
-    document.addEventListener("fullscreenchange",()=>{if(!document.fullscreenElement&&state.screen==="exam"){alert("Anda keluar dari fullscreen! Ujian dikunci.");state.locked=true;clearInterval(state.timer);render();}});
-    function selectAnswer(i){if(!state.locked){state.answers[state.current]=i;render();}}
-    function navigate(d){if(!state.locked){const n=state.current+d;if(n>=0&&n<questions.length)state.current=n;render();}}
-    function calculateScore(){let correct=0;state.answers.forEach((a,i)=>{if(a===questions[i].correct)correct++;});return Math.round((correct/questions.length)*100);}
+function renderResult(app){
+  const r=state.final,g=r.score>=90?"A":r.score>=80?"B":r.score>=70?"C":"D";
+  app.innerHTML=`<div class="min-h-full flex items-center justify-center bg-[${config.background_color}] p-4"><div class="bg-white p-8 rounded-2xl shadow-xl text-center max-w-lg w-full">
+    <h1 class="text-2xl font-bold mb-2">Ujian Selesai!</h1><p class="mb-5">${r.passed?"Selamat, nilai mencapai KKM.":"Nilai belum mencapai KKM."}</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+      <div class="bg-blue-50 rounded-lg p-3"><b class="text-3xl text-blue-600">${r.score}</b><p class="text-sm">Nilai</p></div>
+      <div class="bg-green-50 rounded-lg p-3"><b class="text-3xl text-green-600">${r.correct}</b><p class="text-sm">Benar</p></div>
+      <div class="bg-red-50 rounded-lg p-3"><b class="text-3xl text-red-600">${r.wrong}</b><p class="text-sm">Salah</p></div>
+      <div class="bg-amber-50 rounded-lg p-3"><b class="text-3xl text-amber-600">${r.blank}</b><p class="text-sm">Kosong</p></div>
+    </div>
+    <p class="mb-5">KKM: <b>${r.kkm}</b> • Status: <b class="${r.passed?"text-green-600":"text-red-600"}">${r.passed?"LULUS":"BELUM LULUS"}</b> • Predikat ${g}</p>
+    <button id="finish" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">Kembali</button>
+  </div></div>`;
+  document.getElementById("finish").onclick=()=>{try{document.exitFullscreen()}catch{};state.screen="start";render()};
+}
 
-    // ===================== KIRIM HASIL =====================
-    function submitExam(){
-      clearInterval(state.timer);
-      const score=calculateScore();
-      const correct=state.answers.filter((a,i)=>a===questions[i].correct).length;
-      const data={name:state.studentName,class:state.studentClass,score,correct,total:questions.length,date:new Date().toLocaleString(),bab:"Ujian Akhir Semester (Bab 1–6)"};
-      const saved=JSON.parse(localStorage.getItem('hasilUjian')||"[]");saved.push(data);localStorage.setItem('hasilUjian',JSON.stringify(saved));
-      fetch("https://script.google.com/macros/s/AKfycbzVTgd56dfUMSHugbPkAJlMIpWJ0RDFI8frj4u4hxFSQRWwgDiXAO45WlssyL-KReBwwA/exec",{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)});
-      state.screen='result';state.finalScore=score;state.correct=correct;render();
+function renderAdminLogin(app){
+  app.innerHTML=`<div class="min-h-full flex items-center justify-center bg-slate-100 p-4"><div class="bg-white p-8 rounded-2xl shadow-xl max-w-sm w-full">
+    <h1 class="text-2xl font-bold mb-5 text-center">Login Panel Admin</h1>
+    <input id="adminUser" class="w-full border rounded-lg p-3 mb-3" placeholder="Username" value="admin">
+    <input id="adminPass" type="password" class="w-full border rounded-lg p-3 mb-4" placeholder="Password">
+    <button id="login" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">Masuk</button>
+    <button id="back" class="w-full mt-2 border py-2 rounded-lg">Kembali</button>
+    <p class="text-xs text-slate-500 mt-4">Default: admin / admin123. Ganti password pada kode untuk produksi.</p>
+  </div></div>`;
+  document.getElementById("login").onclick=loginAdmin;
+  document.getElementById("back").onclick=()=>{state.screen="start";render()};
+}
+
+function adminNav(){
+  const tabs=[["dashboard","Dashboard"],["students","Data Siswa"],["questions","Bank Soal"],["tokens","Token"],["reports","Laporan"]];
+  return tabs.map(([id,label])=>`<button data-tab="${id}" class="px-3 py-2 rounded-lg font-semibold ${state.adminTab===id?"tab-active":""}">${label}</button>`).join("");
+}
+function renderAdmin(app){
+  app.innerHTML=`<div class="min-h-full bg-slate-100"><header class="bg-slate-900 text-white p-4"><div class="max-w-7xl mx-auto flex flex-wrap justify-between gap-3 items-center"><div><h1 class="text-xl font-bold">Panel Admin Ujian</h1><p class="text-slate-300 text-sm">${esc(config.school_name)}</p></div><div class="flex flex-wrap gap-2">${adminNav()}<button id="logout" class="px-3 py-2 rounded-lg bg-red-600">Keluar</button></div></div></header><main class="max-w-7xl mx-auto p-4" id="adminContent"></main></div>`;
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{state.adminTab=b.dataset.tab;renderAdmin(document.getElementById("app"))});
+  document.getElementById("logout").onclick=()=>{state.screen="start";render()};
+  const c=document.getElementById("adminContent");
+  if(state.adminTab==="dashboard")renderDashboard(c);
+  if(state.adminTab==="students")renderStudents(c);
+  if(state.adminTab==="questions")renderQuestions(c);
+  if(state.adminTab==="tokens")renderTokens(c);
+  if(state.adminTab==="reports")renderReports(c);
+}
+
+function card(title,value,sub=""){return `<div class="bg-white rounded-xl shadow p-5"><p class="text-slate-500">${title}</p><b class="text-3xl">${value}</b><p class="text-xs text-slate-500">${sub}</p></div>`}
+
+function renderDashboard(c){
+  const s=getStudents(),q=getQuestions(),t=getTokens(),r=getResults(),passed=r.filter(x=>x.passed).length,avg=r.length?Math.round(r.reduce((a,x)=>a+x.score,0)/r.length):0;
+  c.innerHTML=`<div class="mb-5"><h2 class="text-2xl font-bold">Dashboard</h2><p class="text-slate-600">Ringkasan data ujian.</p></div>
+  <div class="grid md:grid-cols-5 gap-4">${card("Siswa",s.length)}${card("Soal",q.length)}${card("Token Aktif",t.filter(x=>x.active&&!x.used).length)}${card("Peserta Ujian",r.length)}${card("Rata-rata Nilai",avg,`KKM ${config.kkm}`)}</div>
+  <div class="bg-white rounded-xl shadow p-5 mt-5"><h3 class="font-bold mb-3">Ringkasan Kelulusan</h3><div class="flex gap-6"><div><b class="text-green-600 text-2xl">${passed}</b><p>Lulus</p></div><div><b class="text-red-600 text-2xl">${r.length-passed}</b><p>Belum lulus</p></div></div></div>
+  <div class="bg-white rounded-xl shadow p-5 mt-5"><h3 class="font-bold mb-3">Pengaturan</h3><div class="grid md:grid-cols-3 gap-3"><label>KKM<input id="kkm" type="number" min="0" max="100" value="${config.kkm}" class="w-full border rounded-lg p-2"></label><label>Durasi (menit)<input id="duration" type="number" min="1" value="${Math.round(config.duration/60)}" class="w-full border rounded-lg p-2"></label><button id="saveSettings" class="bg-blue-600 text-white rounded-lg p-2 mt-5">Simpan Pengaturan</button></div></div>`;
+  document.getElementById("saveSettings").onclick=()=>{config.kkm=Math.max(0,Math.min(100,+document.getElementById("kkm").value||75));config.duration=Math.max(60,(+document.getElementById("duration").value||10)*60);alert("Pengaturan tersimpan untuk sesi ini.")};
+}
+
+function renderStudents(c){
+  const s=getStudents();
+  c.innerHTML=`<div class="mb-5">
+    <div class="flex flex-wrap justify-between gap-2 items-center mb-4">
+      <div><h2 class="text-2xl font-bold">Data Siswa</h2><p class="text-slate-600">Tambah siswa langsung melalui form.</p></div>
+      <div class="flex gap-2"><button id="exportStudents" class="border px-4 py-2 rounded-lg">Export CSV</button><label class="border px-4 py-2 rounded-lg cursor-pointer">Import CSV<input id="importStudents" type="file" accept=".csv,text/csv" class="hidden"></label></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-5 mb-5">
+      <h3 class="font-bold text-lg mb-4">Tambah Siswa</h3>
+      <form id="studentFormInline" class="grid md:grid-cols-4 gap-3 items-end">
+        <label class="font-semibold">ID<input id="studentId" class="w-full border rounded-lg p-3 mt-1" placeholder="S001" required></label>
+        <label class="font-semibold">Nama<input id="studentName" class="w-full border rounded-lg p-3 mt-1" placeholder="Nama lengkap" required></label>
+        <label class="font-semibold">Kelas<input id="studentClass" class="w-full border rounded-lg p-3 mt-1" placeholder="7.1" required></label>
+        <button class="bg-blue-600 text-white p-3 rounded-lg font-bold">+ Simpan Siswa</button>
+      </form>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3 text-left">ID</th><th class="p-3 text-left">Nama</th><th class="p-3 text-left">Kelas</th><th class="p-3">Aksi</th></tr></thead><tbody>${s.map(x=>`<tr class="border-t"><td class="p-3">${esc(x.id)}</td><td class="p-3">${esc(x.name)}</td><td class="p-3">${esc(x.className)}</td><td class="p-3 text-center"><button data-del="${x.id}" class="text-red-600">Hapus</button></td></tr>`).join("")}</tbody></table></div>
+  <p class="text-xs text-slate-500 mt-3">Format import: id,nama,kelas. Header opsional.</p>`;
+  document.getElementById("studentFormInline").onsubmit=e=>{
+    e.preventDefault();
+    const id=document.getElementById("studentId").value.trim(),name=document.getElementById("studentName").value.trim(),cls=document.getElementById("studentClass").value.trim();
+    const students=getStudents();
+    if(students.some(x=>x.id.toLowerCase()===id.toLowerCase()))return alert("ID siswa sudah digunakan.");
+    students.push({id,name,className:cls});save("studentsDB",students);
+    apiWrite("student",{id,name,className:cls});
+    renderAdmin(document.getElementById("app"));
+  };
+  document.getElementById("exportStudents").onclick=()=>downloadText("data-siswa.csv",["id,nama,kelas",...s.map(x=>[x.id,x.name,x.className].map(csvCell).join(","))].join("\n"));
+  document.getElementById("importStudents").onchange=e=>importStudents(e.target.files[0]);
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{if(confirm("Hapus siswa ini?")){save("studentsDB",getStudents().filter(x=>x.id!==b.dataset.del));renderAdmin(document.getElementById("app"))}});
+}
+function studentForm(){
+  const id=prompt("ID siswa (kosong = otomatis):",""); if(id===null)return;
+  const name=prompt("Nama siswa:",""); if(!name)return;
+  const cls=prompt("Kelas:","7.1");if(!cls)return;
+  const s=getStudents();s.push({id:id.trim()||uid("S"),name:name.trim(),className:cls.trim()});save("studentsDB",s);renderAdmin(document.getElementById("app"));
+}
+function importStudents(file){
+  if(!file)return;const rd=new FileReader();rd.onload=()=>{const rows=parseCSV(rd.result);let s=getStudents(),added=0;rows.forEach((r,i)=>{if(i===0&&/nama|name/i.test(r[1]||""))return;if((r[1]||"").trim()){s.push({id:(r[0]||"").trim()||uid("S"),name:r[1].trim(),className:(r[2]||"").trim()||"7.1"});added++}});save("studentsDB",s);alert(`${added} siswa diimpor.`);renderAdmin(document.getElementById("app"))};rd.readAsText(file);
+}
+
+function renderQuestions(c){
+  const q=getQuestions();
+  c.innerHTML=`<div class="mb-5">
+    <div class="flex flex-wrap justify-between gap-2 items-center mb-4">
+      <div><h2 class="text-2xl font-bold">Bank Soal</h2><p class="text-slate-600">Tambah soal langsung melalui form. Soal diacak saat ujian.</p></div>
+      <div class="flex gap-2"><button id="exportQ" class="border px-4 py-2 rounded-lg">Export CSV</button><label class="border px-4 py-2 rounded-lg cursor-pointer">Import CSV<input id="importQ" type="file" accept=".csv,text/csv" class="hidden"></label></div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-5 mb-5">
+      <h3 class="font-bold text-lg mb-4">Tambah Soal</h3>
+      <form id="questionFormInline" class="space-y-3">
+        <div class="grid md:grid-cols-6 gap-3">
+          <label class="font-semibold">No<input id="qNo" type="number" min="1" value="${q.length+1}" class="w-full border rounded-lg p-3 mt-1" required></label>
+          <label class="font-semibold md:col-span-5">Soal<textarea id="qText" class="w-full border rounded-lg p-3 mt-1" rows="2" required></textarea></label>
+        </div>
+        <div class="grid md:grid-cols-2 gap-3">
+          <label class="font-semibold">Option A<input id="qA" class="w-full border rounded-lg p-3 mt-1" required></label>
+          <label class="font-semibold">Option B<input id="qB" class="w-full border rounded-lg p-3 mt-1" required></label>
+          <label class="font-semibold">Option C<input id="qC" class="w-full border rounded-lg p-3 mt-1" required></label>
+          <label class="font-semibold">Option D<input id="qD" class="w-full border rounded-lg p-3 mt-1" required></label>
+        </div>
+        <div class="grid md:grid-cols-3 gap-3">
+          <label class="font-semibold">Kunci Jawaban<select id="qCorrect" class="w-full border rounded-lg p-3 mt-1"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select></label>
+          <label class="font-semibold">Bobot<input id="qWeight" type="number" min="1" value="1" class="w-full border rounded-lg p-3 mt-1" required></label>
+          <label class="font-semibold">Bab / Materi<input id="qChapter" class="w-full border rounded-lg p-3 mt-1" placeholder="Bab 1"></label>
+        </div>
+        <button class="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">+ Simpan Soal</button>
+      </form>
+    </div>
+  </div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">No</th><th class="p-3 text-left">Soal</th><th class="p-3">Kunci</th><th class="p-3">Bobot</th><th class="p-3">Aksi</th></tr></thead><tbody>${q.map((x,i)=>`<tr class="border-t"><td class="p-3 text-center">${i+1}</td><td class="p-3">${esc(x.question)}</td><td class="p-3 text-center">${String.fromCharCode(65+x.correct)}</td><td class="p-3 text-center">${x.weight??1}</td><td class="p-3 text-center"><button data-delq="${x.id}" class="text-red-600">Hapus</button></td></tr>`).join("")}</tbody></table></div>
+  <p class="text-xs text-slate-500 mt-3">Format import: id,soal,pilihanA,pilihanB,pilihanC,pilihanD,kunci,bobot,bab.</p>`;
+  document.getElementById("questionFormInline").onsubmit=e=>{
+    e.preventDefault();
+    const q=getQuestions();
+    q.push({id:uid("Q"),no:+document.getElementById("qNo").value||q.length+1,
+      question:document.getElementById("qText").value.trim(),
+      options:[document.getElementById("qA").value.trim(),document.getElementById("qB").value.trim(),document.getElementById("qC").value.trim(),document.getElementById("qD").value.trim()],
+      correct:+document.getElementById("qCorrect").value,
+      weight:Math.max(1,+document.getElementById("qWeight").value||1),
+      chapter:document.getElementById("qChapter").value.trim()});
+    save("questionsDB",q);
+    apiWrite("question",q[q.length-1]);
+    renderAdmin(document.getElementById("app"));
+  };
+  document.getElementById("exportQ").onclick=()=>downloadText("bank-soal.csv",["id,soal,pilihanA,pilihanB,pilihanC,pilihanD,kunci,bobot,bab",...q.map(x=>[x.id,x.question,...x.options,x.correct,x.weight??1,x.chapter].map(csvCell).join(","))].join("\n"));
+  document.getElementById("importQ").onchange=e=>importQuestions(e.target.files[0]);
+  document.querySelectorAll("[data-delq]").forEach(b=>b.onclick=()=>{if(confirm("Hapus soal ini?")){save("questionsDB",getQuestions().filter(x=>x.id!==b.dataset.delq));renderAdmin(document.getElementById("app"))}});
+}
+
+function importQuestions(file){
+  if(!file)return;const rd=new FileReader();rd.onload=()=>{const rows=parseCSV(rd.result);let q=getQuestions(),added=0;rows.forEach((r,i)=>{if(i===0&&/soal|question/i.test(r[1]||""))return;if((r[1]||"").trim()&&r.length>=7){q.push({id:(r[0]||"").trim()||uid("Q"),question:r[1].trim(),options:[r[2]||"",r[3]||"",r[4]||"",r[5]||""],correct:Math.max(0,Math.min(3,+r[6]||0)),weight:Math.max(1,+r[7]||1),chapter:(r[8]||"").trim()});added++}});save("questionsDB",q);alert(`${added} soal diimpor.`);renderAdmin(document.getElementById("app"))};rd.readAsText(file);
+}
+
+function renderTokens(c){
+  const t=getTokens(),s=getStudents();
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Buat token umum yang dapat digunakan oleh semua siswa. Setiap token hanya dapat digunakan sekali.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">Token</th><th class="p-3">Untuk</th><th class="p-3">Status</th><th class="p-3">Dibuat</th><th class="p-3">Aksi</th></tr></thead><tbody>${t.slice().reverse().map(x=>{const st=s.find(a=>a.id===x.studentId);return `<tr class="border-t"><td class="p-3 font-mono font-bold">${esc(x.code)}</td><td class="p-3">${st?esc(st.name+" ("+st.className+")"):"Umum"}</td><td class="p-3">${x.used?'<span class="text-slate-500">Sudah dipakai</span>':x.active?'<span class="text-green-600">Aktif</span>':'<span class="text-red-600">Nonaktif</span>'}</td><td class="p-3">${esc(x.createdAt)}</td><td class="p-3"><button data-toggle="${x.code}" class="text-blue-600 mr-2">${x.active?"Nonaktifkan":"Aktifkan"}</button><button data-delt="${x.code}" class="text-red-600">Hapus</button></td></tr>`}).join("")}</tbody></table></div>`;
+  document.getElementById("newToken").onclick=()=>createToken();
+  document.getElementById("clearTokens").onclick=()=>{
+    if(confirm("Hapus semua token ujian?")){
+      save("tokensDB",[]);
+      renderAdmin(document.getElementById("app"));
     }
+  };
+  document.querySelectorAll("[data-toggle]").forEach(b=>b.onclick=()=>{const a=getTokens();const x=a.find(v=>v.code===b.dataset.toggle);x.active=!x.active;save("tokensDB",a);renderAdmin(document.getElementById("app"))});
+  document.querySelectorAll("[data-delt]").forEach(b=>b.onclick=()=>{if(confirm("Hapus token?")){save("tokensDB",getTokens().filter(x=>x.code!==b.dataset.delt));renderAdmin(document.getElementById("app"))}});
+}
+function createToken(){
+  const codeInput=prompt(
+    "MASUKKAN TOKEN UJIAN UMUM\n\nToken ini berlaku untuk semua siswa.\nContoh: UJIAN7A-001",
+    ""
+  );
+  if(codeInput===null)return;
 
-    // ===================== RENDER =====================
-    function render(){
-      const app=document.getElementById('app'),s=config;
-      if(state.screen==='start'){
-        app.innerHTML=`<div class='flex h-full items-center justify-center bg-[${s.background_color}] p-4'><div class='max-w-md w-full bg-white p-8 rounded-2xl shadow-xl'><h1 class='text-2xl font-bold text-center mb-2'>${s.exam_title}</h1><p class='text-center mb-1'>${s.school_name}</p><p class='text-center mb-6'>${s.subject_info}</p><div class='mb-4'><label class='font-semibold'>Nama Siswa</label><input id='name' type='text' class='w-full border rounded-lg p-3 mt-2' placeholder='Nama lengkap'></div><div class='mb-6'><label class='font-semibold'>Kelas</label><select id='class' class='w-full border rounded-lg p-3 mt-2'><option value=''>Pilih Kelas</option><option>7.1</option><option>7.2</option><option>7.3</option><option>7.4</option><option>7.5</option><option>7.6</option><option>7.7</option></select></div><button id='start' class='w-full bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600'>Mulai Ujian</button></div></div>`;
-        document.getElementById('start').onclick=async()=>{const n=document.getElementById('name').value.trim();const c=document.getElementById('class').value;if(!n||!c)return alert('Isi nama dan kelas terlebih dahulu!');state.studentName=n;state.studentClass=c;shuffleQuestions();await goFullScreen();state.screen='exam';state.timeLeft=600;state.locked=false;startTimer();render();};
+  const code=normalizeToken(codeInput);
+  if(!code)return alert("Token tidak boleh kosong.");
+
+  const tokens=getTokens();
+  if(tokens.some(t=>normalizeToken(t.code)===code)){
+    return alert("Token tersebut sudah ada. Gunakan token lain.");
+  }
+
+  const token={
+    code,
+    active:true,
+    used:false,
+    studentId:null,
+    createdAt:now()
+  };
+
+  tokens.push(token);
+  save("tokensDB",tokens);
+  apiWrite("token",token);
+
+  alert("Token umum berhasil dibuat: "+code);
+  renderAdmin(document.getElementById("app"));
+}
+
+function renderReports(c){
+  const r=getResults(),avg=r.length?Math.round(r.reduce((a,x)=>a+x.score,0)/r.length):0;
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Laporan Lengkap</h2><p class="text-slate-600">Nilai, benar, salah, kosong, KKM, status, dan detail jawaban.</p></div><button id="exportR" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Laporan CSV</button></div>
+  <div class="grid md:grid-cols-4 gap-4 mb-5">${card("Peserta",r.length)}${card("Rata-rata",avg)}${card("Lulus",r.filter(x=>x.passed).length,`KKM ${config.kkm}`)}${card("Belum Lulus",r.filter(x=>!x.passed).length)}</div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-2">Tanggal</th><th class="p-2 text-left">Nama</th><th class="p-2">Kelas</th><th class="p-2">Nilai</th><th class="p-2">Benar</th><th class="p-2">Salah</th><th class="p-2">Kosong</th><th class="p-2">KKM</th><th class="p-2">Status</th><th class="p-2">Detail</th></tr></thead><tbody>${r.slice().reverse().map(x=>`<tr class="border-t"><td class="p-2">${esc(x.date)}</td><td class="p-2">${esc(x.name)}</td><td class="p-2">${esc(x.className)}</td><td class="p-2 font-bold">${x.score}</td><td class="p-2 text-green-600">${x.correct}</td><td class="p-2 text-red-600">${x.wrong}</td><td class="p-2 text-amber-600">${x.blank}</td><td class="p-2">${x.kkm}</td><td class="p-2 font-bold ${x.passed?"text-green-600":"text-red-600"}">${x.passed?"LULUS":"BELUM"}</td><td class="p-2"><button data-detail="${x.id}" class="text-blue-600">Lihat</button></td></tr>`).join("")}</tbody></table></div>`;
+  document.getElementById("exportR").onclick=()=>exportReports(r);
+  document.querySelectorAll("[data-detail]").forEach(b=>b.onclick=()=>showResultDetail(r.find(x=>x.id===b.dataset.detail)));
+}
+function exportReports(r){
+  const head="id,tanggal,nama,kelas,token,nilai,benar,salah,kosong,total,kkm,status";
+  const lines=r.map(x=>[x.id,x.date,x.name,x.className,x.token,x.score,x.correct,x.wrong,x.blank,x.total,x.kkm,x.passed?"LULUS":"BELUM LULUS"].map(csvCell).join(","));
+  downloadText("laporan-ujian.csv",[head,...lines].join("\n"));
+}
+function showResultDetail(r){
+  if(!r)return;
+  const wrong=r.details.filter(x=>x.answer!==x.correct);
+  const text=wrong.map((x,i)=>`${i+1}. ${x.question}\nJawaban siswa: ${x.answer===null?"Kosong":x.options[x.answer]}\nKunci: ${x.options[x.correct]}`).join("\n\n");
+  alert(`Nama: ${r.name}\nKelas: ${r.className}\nNilai: ${r.score}\nBenar: ${r.correct}\nSalah: ${r.wrong}\nKosong: ${r.blank}\nKKM: ${r.kkm}\nStatus: ${r.passed?"LULUS":"BELUM LULUS"}\n\nDETAIL SOAL SALAH/KOSONG:\n${text||"Tidak ada."}`);
+}
+
+render();
+</script>
+
+<div id="examLockOverlay">
+  <div class="exam-lock-card">
+    <div style="font-size:42px;margin-bottom:10px">🔒</div>
+    <h2 style="font-size:24px;font-weight:800;margin:0 0 8px">Ujian Dikunci</h2>
+    <p style="color:#cbd5e1;margin:0 0 20px">
+      Tampilan ujian harus dalam mode layar penuh.<br>
+      Silakan kembali ke layar penuh untuk melanjutkan ujian.
+    </p>
+    <button id="resumeFullscreenBtn"
+      style="width:100%;padding:12px 16px;border:0;border-radius:10px;
+             background:#2563eb;color:white;font-weight:700;cursor:pointer">
+      Kembali ke Layar Penuh
+    </button>
+  </div>
+</div>
+
+<script>
+(function(){
+  let examActive=false;
+  let examLocked=false;
+
+  function isExamScreen(){
+    return !!document.querySelector('[data-exam-screen], .exam-screen, #examScreen');
+  }
+
+  async function enterExamFullscreen(){
+    try{
+      if(document.fullscreenElement) return true;
+      const el=document.documentElement;
+      if(el.requestFullscreen){
+        await el.requestFullscreen({navigationUI:"hide"});
+        return true;
       }
-      else if(state.screen==='exam'){
-        const q=questions[state.current];
-        app.innerHTML=`<div class='flex flex-col h-full bg-[${s.background_color}]'><div class='p-4 bg-white shadow flex justify-between items-center'><div><h2 class='font-bold'>${state.studentName}</h2><p class='text-sm'>Kelas ${state.studentClass} • Soal ${state.current+1}/${questions.length}</p></div><div class='text-right'><div id='timer' class='font-bold text-blue-600 text-xl'>${formatTime(state.timeLeft)}</div><p class='text-sm text-slate-600'>Waktu tersisa</p></div></div><div class='flex-1 overflow-y-auto p-4'>${state.locked?`<div class='text-center mt-20 text-red-600 font-bold text-xl'>Ujian dikunci karena keluar dari fullscreen.</div>`:`<div class='max-w-3xl mx-auto bg-white p-6 rounded-xl shadow question-card'><div class='flex mb-4'><span class='bg-blue-500 text-white px-3 py-1 rounded-lg mr-3 font-bold'>${state.current+1}</span><p class='font-semibold'>${q.question}</p></div><div class='space-y-3'>${q.options.map((opt,i)=>{const sel=state.answers[state.current]===i;return `<button class='option-button w-full text-left p-3 border-2 rounded-lg ${sel?'bg-green-500 text-white border-green-600':'border-slate-300'}' data-i='${i}'><span class='font-bold'>${String.fromCharCode(65+i)}.</span> ${opt}</button>`;}).join('')}</div></div><div class='flex justify-between mt-6'><button id='prev' class='px-4 py-2 rounded-lg border border-blue-600 text-blue-700 font-semibold ${state.current===0?'opacity-50 cursor-not-allowed':''}'>← Sebelumnya</button>${state.current===questions.length-1?`<button id='submit' class='px-6 py-2 bg-green-600 text-white font-bold rounded-lg'>Selesai & Kirim</button>`:`<button id='next' class='px-6 py-2 bg-blue-600 text-white font-bold rounded-lg'>Selanjutnya →</button>`}</div>`}</div></div>`;
-        document.querySelectorAll('[data-i]')?.forEach(b=>b.onclick=()=>selectAnswer(parseInt(b.dataset.i)));
-        document.getElementById('prev')?.addEventListener('click',()=>navigate(-1));
-        document.getElementById('next')?.addEventListener('click',()=>navigate(1));
-        document.getElementById('submit')?.addEventListener('click',submitExam);
-      }
-      else if(state.screen==='result'){
-        const g=state.finalScore>=90?'A':state.finalScore>=80?'B':state.finalScore>=70?'C':'D';
-        const msg=g==='A'?'Luar biasa! Kamu menguasai semua materi.':'Terus belajar, kamu pasti bisa lebih baik!';
-        app.innerHTML=`<div class='flex items-center justify-center h-full bg-[${s.background_color}] p-4'><div class='bg-white p-8 rounded-2xl shadow-xl text-center max-w-md w-full'><h1 class='text-2xl font-bold mb-3'>Ujian Selesai!</h1><p class='mb-6'>${msg}</p><div class='grid grid-cols-2 gap-4 mb-6'><div class='bg-blue-50 rounded-lg p-4'><div class='text-4xl font-bold text-blue-600'>${state.finalScore}</div><p>Nilai</p></div><div class='bg-green-50 rounded-lg p-4'><div class='text-4xl font-bold text-green-600'>${g}</div><p>Predikat</p></div></div><button id='finish' class='w-full bg-blue-600 text-white py-3 rounded-lg font-bold'>Tutup</button></div></div>`;
-        document.getElementById('finish').onclick=()=>{document.exitFullscreen();state.screen='start';render();};
+    }catch(e){
+      console.warn("Fullscreen gagal:",e);
+    }
+    return false;
+  }
+
+  function lockExam(){
+    if(!examActive) return;
+    examLocked=true;
+    document.body.classList.add("exam-mode");
+    const overlay=document.getElementById("examLockOverlay");
+    if(overlay) overlay.classList.add("show");
+  }
+
+  function unlockExam(){
+    examLocked=false;
+    const overlay=document.getElementById("examLockOverlay");
+    if(overlay) overlay.classList.remove("show");
+  }
+
+  async function startExamProtection(){
+    examActive=true;
+    document.body.classList.add("exam-mode");
+    await enterExamFullscreen();
+  }
+
+  function stopExamProtection(){
+    examActive=false;
+    examLocked=false;
+    document.body.classList.remove("exam-mode");
+    const overlay=document.getElementById("examLockOverlay");
+    if(overlay) overlay.classList.remove("show");
+  }
+
+  document.addEventListener("fullscreenchange",function(){
+    if(!examActive) return;
+
+    if(!document.fullscreenElement){
+      lockExam();
+    }else{
+      unlockExam();
+    }
+  });
+
+  document.addEventListener("visibilitychange",function(){
+    if(examActive && document.visibilityState !== "visible"){
+      // Jangan menyelesaikan ujian otomatis; kunci tampilan saat kembali.
+      examLocked=true;
+    }
+  });
+
+  window.addEventListener("blur",function(){
+    if(examActive) examLocked=true;
+  });
+
+  window.startExamProtection=startExamProtection;
+  window.stopExamProtection=stopExamProtection;
+  window.enterExamFullscreen=enterExamFullscreen;
+
+  document.addEventListener("click",async function(e){
+    if(e.target && e.target.id==="resumeFullscreenBtn"){
+      const ok=await enterExamFullscreen();
+      if(ok){
+        unlockExam();
+      }else{
+        alert("Browser tidak mengizinkan layar penuh. Klik tombol ini lagi atau gunakan Chrome/Edge.");
       }
     }
+  });
 
-    render();
-  </script>
+  // Setelah DOM siap, pantau perpindahan ke halaman ujian.
+  const observer=new MutationObserver(function(){
+    const exam= isExamScreen();
+    if(exam && !examActive){
+      startExamProtection();
+    }else if(!exam && examActive){
+      stopExamProtection();
+    }
+  });
+
+  observer.observe(document.body,{childList:true,subtree:true});
+
+  // API global untuk dipanggil langsung setelah login.
+  window.__examProtection={
+    start:startExamProtection,
+    stop:stopExamProtection,
+    lock:lockExam,
+    unlock:unlockExam
+  };
+})();
+</script>
+
+
+<script>
+window.addEventListener("beforeunload",function(e){
+  if(window.__examProtection && document.body.classList.contains("exam-mode")){
+    e.preventDefault();
+    e.returnValue="";
+  }
+});
+history.pushState({examGuard:true},"",location.href);
+window.addEventListener("popstate",function(){
+  if(document.body.classList.contains("exam-mode")){
+    history.pushState({examGuard:true},"",location.href);
+    if(window.__examProtection) window.__examProtection.lock();
+  }
+});
+</script>
+
 </body>
 </html>
