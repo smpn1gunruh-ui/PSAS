@@ -4,11 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ujian Akhir Semester - Informatika Kelas 7</title>
-<script src="tailwind.js">
-function renderLogin(c){ return syncStartup(c); }
-
-renderLogin(document.getElementById("app"));
-</script>
+<script src="tailwind.js"></script>
 <style>
   body,html{height:100%;margin:0;padding:0;font-family:Inter,system-ui,sans-serif}
   .question-card{transition:all .3s ease}.option-button{transition:all .2s ease}
@@ -70,7 +66,7 @@ body.exam-mode{
 
 const config = {
   // Setelah Apps Script selesai dibuat, tempel URL /exec di sini.
-  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbz0ldlNMyniqHKnNLRzpF5utRAWeMXFXon64guiCUJMpfXPRD9rsGlJsG_Rz4bJn9w/exec",
+  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbzTeqbdq1ZHMCGPMu3SoPU7-iPqJs-SEFjT7p92tFlR-rhAgwEzUkEKmBmrMRcjJsY/exec",
   exam_title:"Ujian Akhir Semester - Informatika Kelas 7",
   school_name:"SMP Negeri 1 Gunungguruh",
   subject_info:"Materi Bab 1–6",
@@ -93,7 +89,7 @@ function apiWrite(type,data={}){
 
 function syncFromSpreadsheet(){
   return new Promise((resolve,reject)=>{
-    const cb="dbTikCallback_"+Date.now();
+    const cb="dbTikCallback_"+Date.now()+"_"+Math.floor(Math.random()*100000);
     const script=document.createElement("script");
     const timer=setTimeout(()=>{
       cleanup();
@@ -166,10 +162,13 @@ function syncStartup(){
   if(el)el.textContent="Menghubungkan ke Google Spreadsheet...";
   return syncFromSpreadsheet().then(d=>{
     if(el)el.textContent=`✓ Terhubung ke Spreadsheet • ${d.students.length} siswa • ${d.questions.length} soal • ${d.tokens.length} token`;
+    // Data baru sudah masuk localStorage; render ulang agar perangkat HP langsung memakai data terbaru.
+    try{ render(); }catch(e){ console.warn("Render setelah sync gagal:",e); }
     return d;
   }).catch(e=>{
-    console.warn(e);
+    console.warn("Sync Spreadsheet gagal:",e);
     if(el)el.textContent="⚠ Spreadsheet tidak terhubung — data lokal digunakan";
+    try{ render(); }catch(err){ console.warn("Render fallback gagal:",err); }
     return null;
   });
 }
@@ -652,6 +651,10 @@ function showResultDetail(r){
 }
 
 render();
+
+// Ambil data terbaru dari Spreadsheet setiap kali halaman dibuka.
+// Jangan hanya mengandalkan localStorage perangkat.
+syncStartup();
 </script>
 
 <div id="examLockOverlay">
