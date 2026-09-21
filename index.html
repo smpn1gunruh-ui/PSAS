@@ -62,7 +62,7 @@ body.exam-mode{
 <script>
 // ============================================================
 // UJIAN ONLINE - ADMIN + SISWA + TOKEN + LAPORAN
-// Data disimpan di localStorage browser.
+// Data lokal dipakai sebagai cache; sumber utama tetap Google Spreadsheet.
 // ============================================================
 
 const config = {
@@ -312,11 +312,120 @@ function startTimer(){
     if(state.timeLeft<=0){clearInterval(state.timer);submitExam()}
   },1000);
 }
-async function goFullScreen(){if(document.documentElement.requestFullscreen)try{await document.documentElement.requestFullscreen()}catch{}}
-document.addEventListener("fullscreenchange",()=>{
-  if(!document.fullscreenElement&&state.screen==="exam"&&!state.final){
-    state.locked=true;clearInterval(state.timer);render();
+let examProtectionActive=false;
+let examProtectionStarting=false;
+let examFullscreenGuard=null;
+
+async function enterExamFullscreen(){
+  try{
+    if(document.fullscreenElement)return true;
+    const el=document.documentElement;
+    const fn=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(!fn)return false;
+    const result=fn.call(el);
+    if(result && typeof result.then==="function") await result;
+    return !!document.fullscreenElement || !!document.webkitFullscreenElement;
+  }catch(e){
+    console.warn("Fullscreen gagal:",e);
+    return false;
   }
+}
+
+async function exitExamFullscreen(){
+  try{
+    const fn=document.exitFullscreen||document.webkitExitFullscreen;
+    if(fn){
+      const result=fn.call(document);
+      if(result && typeof result.then==="function") await result;
+    }
+  }catch(e){console.warn("Keluar fullscreen gagal:",e)}
+}
+
+function isFullscreen(){return !!(document.fullscreenElement||document.webkitFullscreenElement)}
+
+function showExamLock(){
+  state.locked=true;
+  clearInterval(state.timer);
+  const overlay=document.getElementById("examLockOverlay");
+  if(overlay)overlay.classList.add("show");
+}
+
+function hideExamLock(){
+  state.locked=false;
+  const overlay=document.getElementById("examLockOverlay");
+  if(overlay)overlay.classList.remove("show");
+}
+
+function stopExamProtection(){
+  examProtectionActive=false;
+  if(examFullscreenGuard){clearInterval(examFullscreenGuard);examFullscreenGuard=null;}
+  examProtectionStarting=false;
+  document.body.classList.remove("exam-mode");
+  const overlay=document.getElementById("examLockOverlay");
+  if(overlay)overlay.classList.remove("show");
+}
+
+async function startExamProtection(){
+  examProtectionActive=true;
+  document.body.classList.add("exam-mode");
+  const ok=await enterExamFullscreen();
+  if(!ok){
+    examProtectionActive=false;
+    document.body.classList.remove("exam-mode");
+    return false;
+  }
+
+  // Guard tambahan: beberapa browser/HP tidak selalu mengirim
+  // fullscreenchange secara konsisten. Karena itu status fullscreen
+  // diperiksa berkala selama ujian berlangsung.
+  if(examFullscreenGuard)clearInterval(examFullscreenGuard);
+  examFullscreenGuard=setInterval(()=>{
+    if(!examProtectionActive || state.screen!=="exam" || state.final){
+      clearInterval(examFullscreenGuard);
+      examFullscreenGuard=null;
+      return;
+    }
+    if(!isFullscreen() && !state.locked){
+      showExamLock();
+      render();
+    }
+  },300);
+
+  return true;
+}
+
+document.addEventListener("fullscreenchange",()=>{
+  if(!examProtectionActive || state.screen!=="exam" || state.final)return;
+  if(!isFullscreen()){
+    showExamLock();
+    render();
+  }else if(state.locked){
+    hideExamLock();
+    render();
+    startTimer();
+  }
+});
+
+document.addEventListener("webkitfullscreenchange",()=>{
+  if(!examProtectionActive || state.screen!=="exam" || state.final)return;
+  if(!isFullscreen()){
+    showExamLock();
+    render();
+  }else if(state.locked){
+    hideExamLock();
+    render();
+    startTimer();
+  }
+});
+
+document.addEventListener("visibilitychange",()=>{
+  if(examProtectionActive && state.screen==="exam" && document.visibilityState!=="visible"){
+    showExamLock();
+  }
+});
+
+window.addEventListener("blur",()=>{
+  if(examProtectionActive && state.screen==="exam")showExamLock();
 });
 function selectAnswer(i){if(!state.locked){state.answers[state.current]=i;render()}}
 function navigate(d){if(!state.locked){const n=state.current+d;if(n>=0&&n<state.examQuestions.length)state.current=n;render()}}
@@ -352,16 +461,25 @@ function submitExam(){
 
 function startExam(student, tok){
   const all=getQuestions();
-  if(!all.length)return alert("Belum ada soal. Silakan minta admin menginput soal.");
-  state.studentId=student.id; state.studentName=student.name; state.studentClass=student.className; state.token=tok.code;
+  if(!all.length)throw new Error("Belum ada soal. Silakan minta admin menginput soal.");
+  state.studentId=student.id;
+  state.studentName=student.name;
+  state.studentClass=student.className;
+  state.token=tok.code;
   state.examQuestions=shuffle(all).map(q=>{
     const pairs=q.options.map((text,i)=>({text,isCorrect:i===q.correct}));
     const so=shuffle(pairs);
     return {...q,options:so.map(x=>x.text),correct:so.findIndex(x=>x.isCorrect)};
   });
   state.answers=new Array(state.examQuestions.length).fill(null);
-  state.current=0;state.timeLeft=config.duration;state.locked=false;state.final=null;
-  goFullScreen();state.screen="exam";startTimer();render();
+  state.current=0;
+  state.timeLeft=config.duration;
+  state.locked=false;
+  state.final=null;
+  state.screen="exam";
+  hideExamLock();
+  startTimer();
+  render();
 }
 
 function loginAdmin(){
@@ -415,22 +533,56 @@ function renderStart(app){
     const btn=document.getElementById("start");
     btn.disabled=true; btn.textContent="Menghubungkan ke Spreadsheet...";
 
+    let fullscreenStarted=false;
     try{
-      // Ambil data terbaru tepat sebelum ujian dimulai.
-      await syncFromSpreadsheet();
-
-      const s=lookup(), t=normalizeToken(document.getElementById("token").value);
+      // Validasi lokal dilakukan sebelum request fullscreen agar tetap berada
+      // dalam user gesture browser (sangat penting di HP).
+      let s=lookup();
+      let t=normalizeToken(document.getElementById("token").value);
+      if(!s){
+        await syncFromSpreadsheet();
+        s=lookup();
+      }
       if(!s)throw new Error("NIS tidak ditemukan di Data Siswa.");
       if(!t)throw new Error("Token wajib diisi.");
+
+      // Masuk fullscreen SEBELUM fetch/await jaringan agar Chrome Android
+      // tidak menolak permintaan fullscreen karena user activation hilang.
+      examProtectionActive=true;
+      document.body.classList.add("exam-mode");
+      fullscreenStarted=await enterExamFullscreen();
+      if(!fullscreenStarted){
+        stopExamProtection();
+        throw new Error("Browser tidak mengizinkan mode layar penuh. Gunakan Chrome/Edge terbaru dan buka Web App langsung dari browser.");
+      }
+
+      // Aktifkan pengawas fullscreen setelah mode ujian benar-benar aktif.
+      if(examFullscreenGuard)clearInterval(examFullscreenGuard);
+      examFullscreenGuard=setInterval(()=>{
+        if(!examProtectionActive || state.screen!=="exam" || state.final){
+          clearInterval(examFullscreenGuard);
+          examFullscreenGuard=null;
+          return;
+        }
+        if(!isFullscreen() && !state.locked){
+          showExamLock();
+          render();
+        }
+      },300);
 
       const online=await apiCheckToken(t,s.id);
       if(online && online.valid===false)throw new Error(online.message||"Token tidak valid.");
 
-      const tok=tokenValid(t,s.name,s.className);
+      // Ambil data terbaru setelah fullscreen aktif.
+      await syncFromSpreadsheet();
+      s=lookup();
+      const tok=tokenValid(t,s?.name||"",s?.className||"");
       if(!tok)throw new Error("Token tidak valid, tidak aktif, atau sudah digunakan.");
 
       startExam(s,tok);
     }catch(e){
+      if(examProtectionActive && !state.examQuestions.length)await stopExamProtection();
+      if(fullscreenStarted)await exitExamFullscreen();
       err.textContent=e.message||"Gagal terhubung ke Spreadsheet.";
       err.classList.remove("hidden");
     }finally{
@@ -473,7 +625,7 @@ function renderResult(app){
     <p class="mb-5">KKM: <b>${r.kkm}</b> • Status: <b class="${r.passed?"text-green-600":"text-red-600"}">${r.passed?"LULUS":"BELUM LULUS"}</b> • Predikat ${g}</p>
     <button id="finish" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">Kembali</button>
   </div></div>`;
-  document.getElementById("finish").onclick=()=>{try{document.exitFullscreen()}catch{};state.screen="start";render()};
+  document.getElementById("finish").onclick=async()=>{stopExamProtection();await exitExamFullscreen();state.screen="start";state.examQuestions=[];state.answers=[];render()};
 }
 
 function renderAdminLogin(app){
@@ -855,136 +1007,51 @@ syncStartup();
       Tampilan ujian harus dalam mode layar penuh.<br>
       Silakan kembali ke layar penuh untuk melanjutkan ujian.
     </p>
-    <button id="resumeFullscreenBtn"
-      style="width:100%;padding:12px 16px;border:0;border-radius:10px;
-             background:#2563eb;color:white;font-weight:700;cursor:pointer">
-      Kembali ke Layar Penuh
-    </button>
+    <button id="resumeFullscreenBtn" style="width:100%;padding:12px 16px;border:0;border-radius:10px;background:#2563eb;color:white;font-weight:700;cursor:pointer">Kembali ke Layar Penuh</button>
   </div>
 </div>
 
 <script>
-(function(){
-  let examActive=false;
-  let examLocked=false;
-
-  function isExamScreen(){
-    return !!document.querySelector('[data-exam-screen], .exam-screen, #examScreen');
-  }
-
-  async function enterExamFullscreen(){
-    try{
-      if(document.fullscreenElement) return true;
-      const el=document.documentElement;
-      if(el.requestFullscreen){
-        await el.requestFullscreen({navigationUI:"hide"});
-        return true;
+document.addEventListener("click",async function(e){
+  if(e.target && e.target.id==="resumeFullscreenBtn"){
+    const ok=await enterExamFullscreen();
+    if(ok && isFullscreen()){
+      hideExamLock();
+      if(!examFullscreenGuard){
+        examFullscreenGuard=setInterval(()=>{
+          if(!examProtectionActive || state.screen!=="exam" || state.final){
+            clearInterval(examFullscreenGuard);
+            examFullscreenGuard=null;
+            return;
+          }
+          if(!isFullscreen() && !state.locked){
+            showExamLock();
+            render();
+          }
+        },300);
       }
-    }catch(e){
-      console.warn("Fullscreen gagal:",e);
-    }
-    return false;
-  }
-
-  function lockExam(){
-    if(!examActive) return;
-    examLocked=true;
-    document.body.classList.add("exam-mode");
-    const overlay=document.getElementById("examLockOverlay");
-    if(overlay) overlay.classList.add("show");
-  }
-
-  function unlockExam(){
-    examLocked=false;
-    const overlay=document.getElementById("examLockOverlay");
-    if(overlay) overlay.classList.remove("show");
-  }
-
-  async function startExamProtection(){
-    examActive=true;
-    document.body.classList.add("exam-mode");
-    await enterExamFullscreen();
-  }
-
-  function stopExamProtection(){
-    examActive=false;
-    examLocked=false;
-    document.body.classList.remove("exam-mode");
-    const overlay=document.getElementById("examLockOverlay");
-    if(overlay) overlay.classList.remove("show");
-  }
-
-  document.addEventListener("fullscreenchange",function(){
-    if(!examActive) return;
-
-    if(!document.fullscreenElement){
-      lockExam();
+      render();
+      startTimer();
     }else{
-      unlockExam();
+      alert("Browser tidak mengizinkan layar penuh. Tekan tombol lagi atau gunakan Chrome/Edge terbaru.");
     }
-  });
-
-  document.addEventListener("visibilitychange",function(){
-    if(examActive && document.visibilityState !== "visible"){
-      // Jangan menyelesaikan ujian otomatis; kunci tampilan saat kembali.
-      examLocked=true;
-    }
-  });
-
-  window.addEventListener("blur",function(){
-    if(examActive) examLocked=true;
-  });
-
-  window.startExamProtection=startExamProtection;
-  window.stopExamProtection=stopExamProtection;
-  window.enterExamFullscreen=enterExamFullscreen;
-
-  document.addEventListener("click",async function(e){
-    if(e.target && e.target.id==="resumeFullscreenBtn"){
-      const ok=await enterExamFullscreen();
-      if(ok){
-        unlockExam();
-      }else{
-        alert("Browser tidak mengizinkan layar penuh. Klik tombol ini lagi atau gunakan Chrome/Edge.");
-      }
-    }
-  });
-
-  // Setelah DOM siap, pantau perpindahan ke halaman ujian.
-  const observer=new MutationObserver(function(){
-    const exam= isExamScreen();
-    if(exam && !examActive){
-      startExamProtection();
-    }else if(!exam && examActive){
-      stopExamProtection();
-    }
-  });
-
-  observer.observe(document.body,{childList:true,subtree:true});
-
-  // API global untuk dipanggil langsung setelah login.
-  window.__examProtection={
-    start:startExamProtection,
-    stop:stopExamProtection,
-    lock:lockExam,
-    unlock:unlockExam
-  };
-})();
+  }
+});
 </script>
-
 
 <script>
 window.addEventListener("beforeunload",function(e){
-  if(window.__examProtection && document.body.classList.contains("exam-mode")){
+  if(examProtectionActive && state.screen==="exam" && !state.final){
     e.preventDefault();
     e.returnValue="";
   }
 });
 history.pushState({examGuard:true},"",location.href);
 window.addEventListener("popstate",function(){
-  if(document.body.classList.contains("exam-mode")){
+  if(examProtectionActive && state.screen==="exam" && !state.final){
     history.pushState({examGuard:true},"",location.href);
-    if(window.__examProtection) window.__examProtection.lock();
+    showExamLock();
+    render();
   }
 });
 </script>
