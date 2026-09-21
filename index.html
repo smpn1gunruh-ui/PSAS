@@ -234,21 +234,46 @@ function formatTime(s){const m=Math.floor(s/60),sec=s%60;return `${m}:${String(s
 function now(){return new Date().toLocaleString("id-ID")}
 function load(key,fallback){try{const x=JSON.parse(localStorage.getItem(key));return x??fallback}catch{return fallback}}
 function save(key,val){localStorage.setItem(key,JSON.stringify(val))}
-function csvCell(v){return `"${String(v??"").replace(/"/g,'""')}"`}
-function downloadText(filename,text,type="text/csv;charset=utf-8"){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+text],{type}));a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-function parseCSV(text){
-  const rows=[];let row=[],cell="",q=false;
-  for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];
-    if(c=='"'&&q&&n=='"'){cell+='"';i++}
-    else if(c=='"')q=!q;
-    else if(c==","&&!q){row.push(cell);cell=""}
-    else if((c=="\n"||c=="\r")&&!q){if(c=="\r"&&n=="\n")i++;row.push(cell);if(row.some(x=>x.trim()!=""))rows.push(row);row=[];cell=""}
-    else cell+=c;
-  }
-  if(cell!==""||row.length){row.push(cell);if(row.some(x=>x.trim()!=""))rows.push(row)}
-  return rows;
+function downloadBlob(filename,blob){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
-
+function xmlEsc(v){
+  return String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+}
+function docxParagraph(text,bold=false){
+  return `<w:p><w:r>${bold?"<w:rPr><w:b/></w:rPr>":""}<w:t xml:space="preserve">${xmlEsc(text)}</w:t></w:r></w:p>`;
+}
+async function exportWordDocument(filename,title,paragraphs){
+  if(!window.JSZip)return alert("Modul Word belum termuat. Pastikan internet aktif lalu buka ulang aplikasi.");
+  const zip=new JSZip();
+  const body=paragraphs.map(x=>typeof x==="string"?docxParagraph(x):docxParagraph(x.text,x.bold)).join("");
+  const documentXml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+${docxParagraph(title,true)}
+${body}
+<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr>
+</w:body></w:document>`;
+  const contentTypes=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+  const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+  const docRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  zip.file("[Content_Types].xml",contentTypes);
+  zip.folder("_rels").file(".rels",rels);
+  zip.folder("word").file("document.xml",documentXml);
+  zip.folder("word").folder("_rels").file("document.xml.rels",docRels);
+  downloadBlob(filename,await zip.generateAsync({type:"blob",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}));
+}
 if(!localStorage.getItem("questionsDB")) save("questionsDB",[]);
 if(!localStorage.getItem("studentsDB")) save("studentsDB",[]);
 if(localStorage.getItem("examDataVersion")!=="2"){
@@ -495,294 +520,107 @@ function renderStudents(c){
   const s=getStudents();
   c.innerHTML=`<div class="mb-5">
     <div class="flex flex-wrap justify-between gap-2 items-center mb-4">
-      <div><h2 class="text-2xl font-bold">Data Siswa</h2><p class="text-slate-600">Tambah siswa langsung melalui form.</p></div>
-      <div class="flex gap-2"><button id="exportStudents" class="border px-4 py-2 rounded-lg">Export CSV</button><label class="border px-4 py-2 rounded-lg cursor-pointer">Import CSV<input id="importStudents" type="file" accept=".csv,text/csv" class="hidden"></label></div>
+      <div><h2 class="text-2xl font-bold">Data Siswa</h2><p class="text-slate-600">Kelola data siswa menggunakan dokumen Word.</p></div>
+      <div class="flex gap-2">
+        <button id="exportStudentsWord" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Word</button>
+        <label class="border border-blue-300 text-blue-700 px-4 py-2 rounded-lg cursor-pointer bg-blue-50">Import Word
+          <input id="importStudentsWord" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="hidden">
+        </label>
+      </div>
     </div>
     <div class="bg-white rounded-xl shadow p-5 mb-5">
-      <h3 class="font-bold text-lg mb-4">Tambah Siswa</h3>
-      <form id="studentFormInline" class="grid md:grid-cols-4 gap-3 items-end">
-        <label class="font-semibold">ID<input id="studentId" class="w-full border rounded-lg p-3 mt-1" placeholder="S001" required></label>
-        <label class="font-semibold">Nama<input id="studentName" class="w-full border rounded-lg p-3 mt-1" placeholder="Nama lengkap" required></label>
-        <label class="font-semibold">Kelas<input id="studentClass" class="w-full border rounded-lg p-3 mt-1" placeholder="7.1" required></label>
-        <button class="bg-blue-600 text-white p-3 rounded-lg font-bold">+ Simpan Siswa</button>
-      </form>
+      <div class="flex items-center justify-between">
+        <div><h3 class="font-bold text-lg">Daftar Siswa</h3><p class="text-sm text-slate-500">Tambahkan siswa melalui file Word, bukan form manual.</p></div>
+        <span class="text-sm text-slate-500">${s.length} siswa</span>
+      </div>
     </div>
   </div>
   <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3 text-left">ID</th><th class="p-3 text-left">Nama</th><th class="p-3 text-left">Kelas</th><th class="p-3">Aksi</th></tr></thead><tbody>${s.map(x=>`<tr class="border-t"><td class="p-3">${esc(x.id)}</td><td class="p-3">${esc(x.name)}</td><td class="p-3">${esc(x.className)}</td><td class="p-3 text-center"><button data-del="${x.id}" class="text-red-600">Hapus</button></td></tr>`).join("")}</tbody></table></div>
-  <p class="text-xs text-slate-500 mt-3">Format import: id,nama,kelas. Header opsional.</p>`;
-  document.getElementById("studentFormInline").onsubmit=e=>{
-    e.preventDefault();
-    const id=document.getElementById("studentId").value.trim(),name=document.getElementById("studentName").value.trim(),cls=document.getElementById("studentClass").value.trim();
-    const students=getStudents();
-    if(students.some(x=>x.id.toLowerCase()===id.toLowerCase()))return alert("ID siswa sudah digunakan.");
-    students.push({id,name,className:cls});save("studentsDB",students);
-    apiWrite("student",{id,name,className:cls});
-    renderAdmin(document.getElementById("app"));
-  };
-  document.getElementById("exportStudents").onclick=()=>downloadText("data-siswa.csv",["id,nama,kelas",...s.map(x=>[x.id,x.name,x.className].map(csvCell).join(","))].join("\n"));
-  document.getElementById("importStudents").onchange=e=>importStudents(e.target.files[0]);
+  <p class="text-xs text-slate-500 mt-3">Format Word: <b>ID: S001</b>, <b>Nama: Nama Siswa</b>, <b>Kelas: 7.1</b>. Ulangi blok untuk siswa berikutnya.</p>`;
+  document.getElementById("exportStudentsWord").onclick=()=>exportStudentsWord(s);
+  document.getElementById("importStudentsWord").onchange=e=>importStudentsWord(e.target.files[0]);
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{if(confirm("Hapus siswa ini?")){save("studentsDB",getStudents().filter(x=>x.id!==b.dataset.del));renderAdmin(document.getElementById("app"))}});
 }
-function studentForm(){
-  const id=prompt("ID siswa (kosong = otomatis):",""); if(id===null)return;
-  const name=prompt("Nama siswa:",""); if(!name)return;
-  const cls=prompt("Kelas:","7.1");if(!cls)return;
-  const s=getStudents();s.push({id:id.trim()||uid("S"),name:name.trim(),className:cls.trim()});save("studentsDB",s);renderAdmin(document.getElementById("app"));
+function exportStudentsWord(students){
+  const p=[];
+  students.forEach((x,i)=>{
+    if(i)p.push("");
+    p.push({text:`ID: ${x.id}`,bold:true});
+    p.push(`Nama: ${x.name}`);
+    p.push(`Kelas: ${x.className}`);
+  });
+  exportWordDocument("data-siswa.docx","Data Siswa",p);
 }
-function importStudents(file){
-  if(!file)return;const rd=new FileReader();rd.onload=()=>{const rows=parseCSV(rd.result);let s=getStudents(),added=0;rows.forEach((r,i)=>{if(i===0&&/nama|name/i.test(r[1]||""))return;if((r[1]||"").trim()){s.push({id:(r[0]||"").trim()||uid("S"),name:r[1].trim(),className:(r[2]||"").trim()||"7.1"});added++}});save("studentsDB",s);alert(`${added} siswa diimpor.`);renderAdmin(document.getElementById("app"))};rd.readAsText(file);
+async function importStudentsWord(file){
+  if(!file)return;
+  if(!window.JSZip)return alert("Modul Word belum termuat. Pastikan internet aktif lalu buka ulang aplikasi.");
+  try{
+    const zip=await JSZip.loadAsync(file);
+    const docFile=zip.file("word/document.xml");
+    if(!docFile)throw new Error("File bukan dokumen Word .docx yang valid.");
+    const lines=parseDocxParagraphs(await docFile.async("string"));
+    const students=[];
+    let current={};
+    const flush=()=>{
+      if(current.name)students.push({id:(current.id||"").trim()||uid("S"),name:current.name.trim(),className:(current.className||"").trim()});
+      current={};
+    };
+    lines.forEach(raw=>{
+      const line=String(raw||"").trim();
+      let m=line.match(/^id\s*[:\-]\s*(.+)$/i);
+      if(m){if(current.name)flush();current.id=m[1];return;}
+      m=line.match(/^nama\s*[:\-]\s*(.+)$/i);
+      if(m){current.name=m[1];return;}
+      m=line.match(/^kelas\s*[:\-]\s*(.+)$/i);
+      if(m){current.className=m[1];}
+    });
+    flush();
+    const valid=students.filter(x=>x.name&&x.className);
+    if(!valid.length)return alert("Tidak ada data siswa valid. Gunakan format ID, Nama, dan Kelas pada dokumen Word.");
+    const db=getStudents(),existing=new Set(db.map(x=>x.id.toLowerCase()));
+    const added=valid.filter(x=>!existing.has(x.id.toLowerCase()));
+    if(!added.length)return alert("Semua data siswa dari Word sudah ada.");
+    if(!confirm(`Ditemukan ${added.length} siswa dari Word. Simpan ke Data Siswa?`))return;
+    save("studentsDB",[...db,...added]);
+    await Promise.all(added.map(x=>apiWrite("student",x)));
+    alert(`${added.length} siswa dari Word berhasil diimpor.`);
+    renderAdmin(document.getElementById("app"));
+  }catch(err){
+    console.error(err);
+    alert("Gagal membaca file Word: "+(err.message||err));
+  }
 }
 
 function renderQuestions(c){
   const q=getQuestions();
   c.innerHTML=`<div class="mb-5">
     <div class="flex flex-wrap justify-between gap-2 items-center mb-4">
-      <div><h2 class="text-2xl font-bold">Bank Soal</h2><p class="text-slate-600">Kelola soal satu per satu atau masukkan banyak soal sekaligus.</p></div>
+      <div><h2 class="text-2xl font-bold">Bank Soal</h2><p class="text-slate-600">Import dan export bank soal menggunakan dokumen Word.</p></div>
       <div class="flex flex-wrap gap-2">
-        <button id="addManyQuestions" class="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold">＋ Tambah Soal Banyak</button>
-        <button id="exportQ" class="border px-4 py-2 rounded-lg">Export CSV</button>
-        <label class="border border-blue-300 text-blue-700 px-4 py-2 rounded-lg cursor-pointer bg-blue-50">📄 Import Word (.docx)<input id="importWordQ" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="hidden"></label>
-        <label class="border px-4 py-2 rounded-lg cursor-pointer">Import CSV<input id="importQ" type="file" accept=".csv,text/csv" class="hidden"></label>
+        <button id="exportQWord" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Word</button>
+        <label class="border border-blue-300 text-blue-700 px-4 py-2 rounded-lg cursor-pointer bg-blue-50">Import Word
+          <input id="importWordQ" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="hidden">
+        </label>
       </div>
     </div>
-
-    <div id="bulkQuestionArea" class="hidden"></div>
-
-    <div id="singleQuestionArea" class="bg-white rounded-xl shadow p-5 mb-5">
-      <h3 class="font-bold text-lg mb-4">Tambah Soal</h3>
-      <form id="questionFormInline" class="space-y-3">
-        <div class="grid md:grid-cols-6 gap-3">
-          <label class="font-semibold">No<input id="qNo" type="number" min="1" value="${q.length+1}" class="w-full border rounded-lg p-3 mt-1" required></label>
-          <label class="font-semibold md:col-span-5">Soal<textarea id="qText" class="w-full border rounded-lg p-3 mt-1" rows="2" required></textarea></label>
-        </div>
-        <div class="grid md:grid-cols-2 gap-3">
-          <label class="font-semibold">Option A<input id="qA" class="w-full border rounded-lg p-3 mt-1" required></label>
-          <label class="font-semibold">Option B<input id="qB" class="w-full border rounded-lg p-3 mt-1" required></label>
-          <label class="font-semibold">Option C<input id="qC" class="w-full border rounded-lg p-3 mt-1" required></label>
-          <label class="font-semibold">Option D<input id="qD" class="w-full border rounded-lg p-3 mt-1" required></label>
-        </div>
-        <div class="grid md:grid-cols-3 gap-3">
-          <label class="font-semibold">Kunci Jawaban<select id="qCorrect" class="w-full border rounded-lg p-3 mt-1"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select></label>
-          <label class="font-semibold">Bobot<input id="qWeight" type="number" min="1" value="1" class="w-full border rounded-lg p-3 mt-1" required></label>
-          <label class="font-semibold">Bab / Materi<input id="qChapter" class="w-full border rounded-lg p-3 mt-1" placeholder="Bab 1"></label>
-        </div>
-        <button class="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">+ Simpan Soal</button>
-      </form>
-    </div>
   </div>
-
   <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">No</th><th class="p-3 text-left">Soal</th><th class="p-3">Kunci</th><th class="p-3">Bobot</th><th class="p-3">Aksi</th></tr></thead><tbody>${q.map((x,i)=>`<tr class="border-t"><td class="p-3 text-center">${i+1}</td><td class="p-3">${esc(x.question)}</td><td class="p-3 text-center">${String.fromCharCode(65+x.correct)}</td><td class="p-3 text-center">${x.weight??1}</td><td class="p-3 text-center"><button data-delq="${x.id}" class="text-red-600">Hapus</button></td></tr>`).join("")}</tbody></table></div>
-  <p class="text-xs text-slate-500 mt-3">Format Word: nomor soal, pertanyaan, A-D, lalu <b>Bobot: 1</b> dan <b>Jawaban: B</b>. Satu soal dipisahkan dari soal berikutnya dengan nomor baru.</p>`;
-
-  document.getElementById("questionFormInline").onsubmit=e=>{
-    e.preventDefault();
-    const q=getQuestions();
-    q.push({id:uid("Q"),no:+document.getElementById("qNo").value||q.length+1,
-      question:document.getElementById("qText").value.trim(),
-      options:[document.getElementById("qA").value.trim(),document.getElementById("qB").value.trim(),document.getElementById("qC").value.trim(),document.getElementById("qD").value.trim()],
-      correct:+document.getElementById("qCorrect").value,
-      weight:Math.max(1,+document.getElementById("qWeight").value||1),
-      chapter:document.getElementById("qChapter").value.trim()});
-    save("questionsDB",q);
-    apiWrite("question",q[q.length-1]);
-    renderAdmin(document.getElementById("app"));
-  };
-
-  document.getElementById("addManyQuestions").onclick=()=>showBulkQuestionForm();
-  document.getElementById("exportQ").onclick=()=>downloadText("bank-soal.csv",["id,soal,pilihanA,pilihanB,pilihanC,pilihanD,kunci,bobot,bab",...q.map(x=>[x.id,x.question,...x.options,x.correct,x.weight??1,x.chapter].map(csvCell).join(","))].join("\n"));
-  document.getElementById("importQ").onchange=e=>importQuestions(e.target.files[0]);
+  <p class="text-xs text-slate-500 mt-3">Format Word: nomor soal, pertanyaan, A-D, lalu <b>Bobot: 1</b>, <b>Jawaban: B</b>, dan <b>Bab: Bab 1</b> (opsional).</p>`;
+  document.getElementById("exportQWord").onclick=()=>exportQuestionsWord(q);
   document.getElementById("importWordQ").onchange=e=>importWordQuestions(e.target.files[0]);
   document.querySelectorAll("[data-delq]").forEach(b=>b.onclick=()=>{if(confirm("Hapus soal ini?")){save("questionsDB",getQuestions().filter(x=>x.id!==b.dataset.delq));renderAdmin(document.getElementById("app"))}});
 }
-
-function showBulkQuestionForm(){
-  const area=document.getElementById("bulkQuestionArea");
-  const single=document.getElementById("singleQuestionArea");
-  if(!area)return;
-  if(single)single.classList.add("hidden");
-  area.classList.remove("hidden");
-
-  let forms=[];
-  function blankForm(){
-    return {question:"",a:"",b:"",c:"",d:"",weight:1,correct:0,chapter:""};
-  }
-  function addForm(){
-    readForms();
-    forms.push(blankForm());
-    renderForms();
-  }
-  function removeForm(i){
-    readForms();
-    if(forms.length===1)return alert("Minimal harus ada 1 soal.");
-    forms.splice(i,1);
-    renderForms();
-  }
-  function readForms(){
-    document.querySelectorAll(".bulk-question-item").forEach((item,i)=>{
-      if(!forms[i])return;
-      forms[i].question=item.querySelector('[data-field="question"]').value;
-      forms[i].a=item.querySelector('[data-field="a"]').value;
-      forms[i].b=item.querySelector('[data-field="b"]').value;
-      forms[i].c=item.querySelector('[data-field="c"]').value;
-      forms[i].d=item.querySelector('[data-field="d"]').value;
-      forms[i].weight=Math.max(1,+item.querySelector('[data-field="weight"]').value||1);
-      forms[i].correct=+item.querySelector('[data-field="correct"]').value||0;
-      forms[i].chapter=item.querySelector('[data-field="chapter"]').value;
-    });
-  }
-
-  function renderForms(){
-    area.innerHTML=`
-      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 class="text-xl font-bold text-slate-800">Tambah Soal Banyak</h3>
-          <p class="text-sm text-slate-500">Tampil seperti halaman kosong MS Word. Isi soal dari atas ke bawah, lalu tambahkan soal berikutnya.</p>
-        </div>
-        <button id="closeBulkQuestions" type="button" class="border border-slate-300 bg-white px-4 py-2 rounded-lg">Tutup</button>
-      </div>
-
-      <div class="bg-white border border-slate-300 rounded-lg shadow-sm max-w-4xl mx-auto">
-        <div class="px-8 py-7 md:px-12 md:py-10" id="bulkForms"></div>
-      </div>
-
-      <div class="max-w-4xl mx-auto mt-4 flex flex-wrap items-center gap-3">
-        <button id="addBulkOne" type="button" class="border-2 border-dashed border-blue-400 text-blue-700 bg-white px-5 py-3 rounded-lg font-bold">＋ Tambah 1 Soal</button>
-        <button id="addBulkFive" type="button" class="border border-blue-300 text-blue-700 bg-white px-5 py-3 rounded-lg font-bold">＋ Tambah 5 Soal</button>
-        <button id="saveBulkAll" type="button" class="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">💾 Simpan Semua Soal</button>
-        <button id="clearBulkAll" type="button" class="border border-red-300 text-red-600 px-5 py-3 rounded-lg">Kosongkan Semua</button>
-        <span class="text-sm text-slate-500 ml-auto">Jumlah soal: <b id="bulkQuestionCount">${forms.length}</b></span>
-      </div>
-    `;
-
-    const countEl=document.getElementById("bulkQuestionCount");
-    if(countEl)countEl.textContent=forms.length;
-
-    const box=document.getElementById("bulkForms");
-    box.innerHTML=forms.map((f,i)=>`
-      <div class="bulk-question-item" data-index="${i}" style="font-family:Calibri,Arial,sans-serif;">
-        <div class="flex items-center justify-between mb-3">
-          <div class="text-base font-semibold text-slate-700">${i+1}.</div>
-          <button type="button" data-remove-bulk="${i}" class="text-xs text-red-500 hover:text-red-700">Hapus soal</button>
-        </div>
-
-        <textarea data-field="question" rows="2"
-          class="w-full border-0 border-b border-slate-300 focus:border-blue-500 focus:ring-0 outline-none px-0 py-2 text-base leading-7 resize-y"
-          placeholder="Ketik pertanyaan di sini...">${esc(f.question)}</textarea>
-
-        <div class="mt-4 space-y-2 text-base">
-          <div class="flex items-start gap-2">
-            <span class="pt-1 w-6">A.</span>
-            <input data-field="a" value="${esc(f.a)}" class="flex-1 border-0 border-b border-slate-200 focus:border-blue-500 focus:ring-0 outline-none px-0 py-1.5" placeholder="Pilihan jawaban A">
-          </div>
-          <div class="flex items-start gap-2">
-            <span class="pt-1 w-6">B.</span>
-            <input data-field="b" value="${esc(f.b)}" class="flex-1 border-0 border-b border-slate-200 focus:border-blue-500 focus:ring-0 outline-none px-0 py-1.5" placeholder="Pilihan jawaban B">
-          </div>
-          <div class="flex items-start gap-2">
-            <span class="pt-1 w-6">C.</span>
-            <input data-field="c" value="${esc(f.c)}" class="flex-1 border-0 border-b border-slate-200 focus:border-blue-500 focus:ring-0 outline-none px-0 py-1.5" placeholder="Pilihan jawaban C">
-          </div>
-          <div class="flex items-start gap-2">
-            <span class="pt-1 w-6">D.</span>
-            <input data-field="d" value="${esc(f.d)}" class="flex-1 border-0 border-b border-slate-200 focus:border-blue-500 focus:ring-0 outline-none px-0 py-1.5" placeholder="Pilihan jawaban D">
-          </div>
-        </div>
-
-        <div class="mt-5 text-sm text-slate-500 flex flex-wrap gap-x-6 gap-y-2">
-          <label>Bobot:
-            <input data-field="weight" type="number" min="1" value="${f.weight}"
-              class="w-16 ml-1 border-0 border-b border-slate-300 focus:border-blue-500 focus:ring-0 outline-none text-center">
-          </label>
-          <label>Jawaban:
-            <select data-field="correct"
-              class="ml-1 border-0 border-b border-slate-300 focus:border-blue-500 focus:ring-0 outline-none bg-transparent">
-              <option value="0" ${f.correct===0?"selected":""}>A</option>
-              <option value="1" ${f.correct===1?"selected":""}>B</option>
-              <option value="2" ${f.correct===2?"selected":""}>C</option>
-              <option value="3" ${f.correct===3?"selected":""}>D</option>
-            </select>
-          </label>
-          <label>Bab/Materi:
-            <input data-field="chapter" value="${esc(f.chapter)}"
-              class="ml-1 border-0 border-b border-slate-300 focus:border-blue-500 focus:ring-0 outline-none"
-              placeholder="opsional">
-          </label>
-        </div>
-
-        ${i < forms.length-1 ? '<div class="border-b border-slate-200 mt-8 mb-8"></div>' : ''}
-      </div>
-    `).join("");
-
-    document.querySelectorAll("[data-remove-bulk]").forEach(btn=>{
-      btn.onclick=()=>removeForm(+btn.dataset.removeBulk);
-    });
-
-    document.getElementById("addBulkOne").onclick=()=>{
-      addForm();
-      const items=document.querySelectorAll(".bulk-question-item");
-      items[items.length-1]?.scrollIntoView({behavior:"smooth",block:"center"});
-      items[items.length-1]?.querySelector('[data-field="question"]')?.focus();
-    };
-
-    document.getElementById("addBulkFive").onclick=()=>{
-      readForms();
-      for(let n=0;n<5;n++)forms.push(blankForm());
-      renderForms();
-      const items=document.querySelectorAll(".bulk-question-item");
-      items[items.length-5]?.scrollIntoView({behavior:"smooth",block:"center"});
-      items[items.length-5]?.querySelector('[data-field="question"]')?.focus();
-    };
-
-    document.getElementById("clearBulkAll").onclick=()=>{
-      if(confirm("Kosongkan semua form soal?")){
-        forms=[blankForm()];
-        renderForms();
-        document.querySelector('[data-field="question"]')?.focus();
-      }
-    };
-
-    document.getElementById("closeBulkQuestions").onclick=()=>{
-      area.classList.add("hidden");
-      if(single)single.classList.remove("hidden");
-    };
-
-    document.getElementById("saveBulkAll").onclick=()=>{
-      readForms();
-      const valid=forms.filter(f=>f.question.trim()||f.a.trim()||f.b.trim()||f.c.trim()||f.d.trim());
-      if(!valid.length)return alert("Belum ada soal yang diisi.");
-
-      for(let i=0;i<valid.length;i++){
-        const f=valid[i];
-        if(!f.question.trim()||!f.a.trim()||!f.b.trim()||!f.c.trim()||!f.d.trim()){
-          return alert(`Soal ${i+1} belum lengkap. Isi pertanyaan dan pilihan A-D.`);
-        }
-      }
-
-      const db=getQuestions();
-      const startNo=db.reduce((m,x)=>Math.max(m,Number(x.no)||0),0)+1;
-      const added=valid.map((f,i)=>({
-        id:uid("Q"),
-        no:startNo+i,
-        question:f.question.trim(),
-        options:[f.a.trim(),f.b.trim(),f.c.trim(),f.d.trim()],
-        correct:Math.max(0,Math.min(3,Number(f.correct)||0)),
-        weight:Math.max(1,Number(f.weight)||1),
-        chapter:f.chapter.trim()
-      }));
-
-      save("questionsDB",[...db,...added]);
-
-      Promise.all(added.map(x=>apiWrite("question",x))).finally(()=>{
-        alert(`${added.length} soal berhasil disimpan.`);
-        renderAdmin(document.getElementById("app"));
-      });
-    };
-  }
-
-  // Saat tombol "Tambah Soal Banyak" ditekan, langsung tampil 1 halaman/form kosong.
-  forms=[blankForm()];
-  renderForms();
-  setTimeout(()=>document.querySelector('[data-field="question"]')?.focus(),50);
+function exportQuestionsWord(q){
+  const p=[];
+  q.forEach((x,i)=>{
+    p.push({text:`${i+1}. ${x.question}`,bold:true});
+    x.options.forEach((o,j)=>p.push(`${String.fromCharCode(65+j)}. ${o}`));
+    p.push(`Bobot: ${x.weight??1}`);
+    p.push(`Jawaban: ${String.fromCharCode(65+x.correct)}`);
+    if(x.chapter)p.push(`Bab: ${x.chapter}`);
+    p.push("");
+  });
+  exportWordDocument("bank-soal.docx","Bank Soal",p);
 }
 
 function parseDocxParagraphs(xmlText){
@@ -930,38 +768,6 @@ async function importWordQuestions(file){
   }
 }
 
-function importQuestions(file){
-  if(!file)return;
-  const rd=new FileReader();
-  rd.onload=async()=>{
-    const rows=parseCSV(rd.result);
-    let q=getQuestions(),addedRows=[];
-    rows.forEach((r,i)=>{
-      if(i===0&&/soal|question/i.test(r[2]||r[1]||""))return;
-      const question=(r[2]||r[1]||"").trim();
-      if(question&&r.length>=7){
-        const item={
-          id:(r[0]||"").trim()||uid("Q"),
-          no:q.length+addedRows.length+1,
-          question,
-          options:[r[3]||r[2]||"",r[4]||r[3]||"",r[5]||r[4]||"",r[6]||r[5]||""],
-          correct:Math.max(0,Math.min(3,+r[7]||+r[6]||0)),
-          weight:Math.max(1,+r[8]||+r[7]||1),
-          chapter:(r[9]||r[8]||"").trim()
-        };
-        if(item.options.every(x=>String(x).trim()!==""))addedRows.push(item);
-      }
-    });
-    if(!addedRows.length)return alert("Tidak ada soal valid yang ditemukan dalam file CSV.");
-    q=q.concat(addedRows);
-    save("questionsDB",q);
-    await Promise.all(addedRows.map(x=>apiWrite("question",x)));
-    alert(`${addedRows.length} soal berhasil diimpor dan disimpan.`);
-    renderAdmin(document.getElementById("app"));
-  };
-  rd.readAsText(file);
-}
-
 function renderTokens(c){
   const t=getTokens(),s=getStudents();
   c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Buat token umum yang dapat digunakan oleh semua siswa. Setiap token hanya dapat digunakan sekali.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
@@ -1009,16 +815,23 @@ function createToken(){
 
 function renderReports(c){
   const r=getResults(),avg=r.length?Math.round(r.reduce((a,x)=>a+x.score,0)/r.length):0;
-  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Laporan Lengkap</h2><p class="text-slate-600">Nilai, benar, salah, kosong, KKM, status, dan detail jawaban.</p></div><button id="exportR" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Laporan CSV</button></div>
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Laporan Lengkap</h2><p class="text-slate-600">Nilai, benar, salah, kosong, KKM, status, dan detail jawaban.</p></div><button id="exportR" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Laporan Word</button></div>
   <div class="grid md:grid-cols-4 gap-4 mb-5">${card("Peserta",r.length)}${card("Rata-rata",avg)}${card("Lulus",r.filter(x=>x.passed).length,`KKM ${config.kkm}`)}${card("Belum Lulus",r.filter(x=>!x.passed).length)}</div>
   <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-2">Tanggal</th><th class="p-2 text-left">Nama</th><th class="p-2">Kelas</th><th class="p-2">Nilai</th><th class="p-2">Benar</th><th class="p-2">Salah</th><th class="p-2">Kosong</th><th class="p-2">KKM</th><th class="p-2">Status</th><th class="p-2">Detail</th></tr></thead><tbody>${r.slice().reverse().map(x=>`<tr class="border-t"><td class="p-2">${esc(x.date)}</td><td class="p-2">${esc(x.name)}</td><td class="p-2">${esc(x.className)}</td><td class="p-2 font-bold">${x.score}</td><td class="p-2 text-green-600">${x.correct}</td><td class="p-2 text-red-600">${x.wrong}</td><td class="p-2 text-amber-600">${x.blank}</td><td class="p-2">${x.kkm}</td><td class="p-2 font-bold ${x.passed?"text-green-600":"text-red-600"}">${x.passed?"LULUS":"BELUM"}</td><td class="p-2"><button data-detail="${x.id}" class="text-blue-600">Lihat</button></td></tr>`).join("")}</tbody></table></div>`;
   document.getElementById("exportR").onclick=()=>exportReports(r);
   document.querySelectorAll("[data-detail]").forEach(b=>b.onclick=()=>showResultDetail(r.find(x=>x.id===b.dataset.detail)));
 }
-function exportReports(r){
-  const head="id,tanggal,nama,kelas,token,nilai,benar,salah,kosong,total,kkm,status";
-  const lines=r.map(x=>[x.id,x.date,x.name,x.className,x.token,x.score,x.correct,x.wrong,x.blank,x.total,x.kkm,x.passed?"LULUS":"BELUM LULUS"].map(csvCell).join(","));
-  downloadText("laporan-ujian.csv",[head,...lines].join("\n"));
+async function exportReports(r){
+  const p=[];
+  r.slice().reverse().forEach((x,i)=>{
+    p.push({text:`${i+1}. ${x.name} - Kelas ${x.className}`,bold:true});
+    p.push(`Tanggal: ${x.date}`);
+    p.push(`Nilai: ${x.score} | Benar: ${x.correct} | Salah: ${x.wrong} | Kosong: ${x.blank}`);
+    p.push(`KKM: ${x.kkm} | Status: ${x.passed?"LULUS":"BELUM LULUS"}`);
+    p.push(`Token: ${x.token}`);
+    p.push("");
+  });
+  exportWordDocument("laporan-ujian.docx","Laporan Ujian",p);
 }
 function showResultDetail(r){
   if(!r)return;
