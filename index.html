@@ -67,7 +67,7 @@ body.exam-mode{
 
 const config = {
   // Setelah Apps Script selesai dibuat, tempel URL /exec di sini.
-  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbxqttQ88JsmnbCelwmHLtXzSdejmOiR3cKuNZ-dwBaEXbLYW8nHRQTDT99ekBIGGno/exec",
+  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbzUknXEVf9WCDbp95R9MPj-MqEArzscdIdHFLdxpOxJk610jrVKsNnxwrtGgoc3l-CM5A/exec",
   exam_title:"Ujian Tengah Semester - Informatika Kelas 7",
   school_name:"SMP Negeri 1 Gunungguruh",
    background_color:"#f0f9ff",
@@ -145,9 +145,9 @@ function syncFromSpreadsheet(){
         code:String(x.Token||"").trim().toUpperCase(),
         studentId:String(x["ID Siswa"]||"").trim(),
         active:String(x.Aktif).toLowerCase()==="true" || x.Aktif===true,
-        used:String(x.Terpakai).toLowerCase()==="true" || x.Terpakai===true,
+        used:false,
         createdAt:x["Waktu Dibuat"]||"",
-        usedAt:x["Waktu Digunakan"]||""
+        usedAt:""
       })).filter(x=>x.code);
 
       const results=(d.results||[]).map(x=>{
@@ -266,6 +266,15 @@ function esc(v){return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&l
 function shuffle(a){a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function formatTime(s){const m=Math.floor(s/60),sec=s%60;return `${m}:${String(sec).padStart(2,"0")}`}
 function now(){return new Date().toLocaleString("id-ID")}
+const TOKEN_VALID_MINUTES=10;
+function tokenExpired(t){
+  if(!t?.createdAt)return true;
+  const raw=String(t.createdAt).trim();
+  let d=new Date(raw);
+  const m=raw.match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
+  if(m)d=new Date(Number(m[3]),Number(m[2])-1,Number(m[1]),Number(m[4]),Number(m[5]),Number(m[6]));
+  return !Number.isFinite(d.getTime()) || (Date.now()-d.getTime()) >= TOKEN_VALID_MINUTES*60*1000;
+}
 function load(key,fallback){try{const x=JSON.parse(localStorage.getItem(key));return x??fallback}catch{return fallback}}
 function save(key,val){localStorage.setItem(key,JSON.stringify(val))}
 function downloadBlob(filename,blob){
@@ -328,7 +337,7 @@ function getQuestions(){return load("questionsDB",[])}
 function getTokens(){return load("tokensDB",[])}
 function getResults(){return load("resultsDB",[])}
 function tokenValid(token,studentName,studentClass){
-  const list=getTokens(); const t=list.find(x=>x.code.toUpperCase()===token.toUpperCase()&&x.active&&!x.used);
+  const list=getTokens(); const t=list.find(x=>x.code.toUpperCase()===token.toUpperCase()&&x.active&&!tokenExpired(x));
   if(!t)return null;
   const st=getStudents().find(x=>x.name.toLowerCase()===studentName.toLowerCase()&&x.className===studentClass);
   if(t.studentId && (!st || t.studentId!==st.id))return null;
@@ -483,8 +492,6 @@ function submitExam(){
     details:state.examQuestions.map((q,i)=>({question:q.question,answer:state.answers[i],correct:q.correct,options:q.options,chapter:q.chapter,weight:q.weight??1}))
   };
   const results=getResults();results.push(result);save("resultsDB",results);
-  const tokens=getTokens();const ti=tokens.findIndex(t=>t.code.toUpperCase()===state.token.toUpperCase());
-  if(ti>=0){tokens[ti].used=true;tokens[ti].usedAt=now();tokens[ti].usedBy=state.studentName;save("tokensDB",tokens)}
   state.final=result;state.screen="result";render();
   if(config.googleSheetWebAppUrl){
     apiWrite("result",result)
@@ -982,8 +989,8 @@ async function importWordQuestions(file){
 
 function renderTokens(c){
   const t=getTokens(),s=getStudents();
-  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Buat token umum yang dapat digunakan oleh semua siswa. Setiap token hanya dapat digunakan sekali.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
-  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">Token</th><th class="p-3">Untuk</th><th class="p-3">Status</th><th class="p-3">Dibuat</th><th class="p-3">Aksi</th></tr></thead><tbody>${t.slice().reverse().map(x=>{const st=s.find(a=>a.id===x.studentId);return `<tr class="border-t"><td class="p-3 font-mono font-bold">${esc(x.code)}</td><td class="p-3">${st?esc(st.name+" ("+st.className+")"):"Umum"}</td><td class="p-3">${x.used?'<span class="text-slate-500">Sudah dipakai</span>':x.active?'<span class="text-green-600">Aktif</span>':'<span class="text-red-600">Nonaktif</span>'}</td><td class="p-3">${esc(x.createdAt)}</td><td class="p-3"><button data-toggle="${x.code}" class="text-blue-600 mr-2">${x.active?"Nonaktifkan":"Aktifkan"}</button><button data-delt="${x.code}" class="text-red-600">Hapus</button></td></tr>`}).join("")}</tbody></table></div>`;
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Token berlaku <b>10 menit sejak dibuat</b>. Token tidak hangus karena dipakai; setelah 10 menit buat token baru.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">Token</th><th class="p-3">Untuk</th><th class="p-3">Status</th><th class="p-3">Dibuat</th><th class="p-3">Aksi</th></tr></thead><tbody>${t.slice().reverse().map(x=>{const st=s.find(a=>a.id===x.studentId);return `<tr class="border-t"><td class="p-3 font-mono font-bold">${esc(x.code)}</td><td class="p-3">${st?esc(st.name+" ("+st.className+")"):"Umum"}</td><td class="p-3">${tokenExpired(x)?'<span class="text-orange-600">Kedaluwarsa</span>':x.active?'<span class="text-green-600">Aktif • 10 menit</span>':'<span class="text-red-600">Nonaktif</span>'}</td><td class="p-3">${esc(x.createdAt)}</td><td class="p-3"><button data-toggle="${x.code}" class="text-blue-600 mr-2">${x.active?"Nonaktifkan":"Aktifkan"}</button><button data-delt="${x.code}" class="text-red-600">Hapus</button></td></tr>`}).join("")}</tbody></table></div>`;
   document.getElementById("newToken").onclick=()=>createToken();
   document.getElementById("clearTokens").onclick=()=>{
     if(confirm("Hapus semua token ujian?")){
