@@ -67,7 +67,7 @@ body.exam-mode{
 
 const config = {
   // Setelah Apps Script selesai dibuat, tempel URL /exec di sini.
-  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbxXgaXa9Wl90a7rIewCbZV9QxyJqDHhL94uiCW0BYqdpL3v_FjLRLg3kbt4kyodf2A/exec",
+  googleSheetWebAppUrl:"https://script.google.com/macros/s/AKfycbzUknXEVf9WCDbp95R9MPj-MqEArzscdIdHFLdxpOxJk610jrVKsNnxwrtGgoc3l-CM5A/exec",
   exam_title:"Ujian Tengah Semester - Informatika Kelas 7",
   school_name:"SMP Negeri 1 Gunungguruh",
    background_color:"#f0f9ff",
@@ -78,13 +78,23 @@ const config = {
 };
 
 function apiWrite(type,data={}){
-  if(!config.googleSheetWebAppUrl)return Promise.resolve();
+  if(!config.googleSheetWebAppUrl)return Promise.resolve({status:false});
   return fetch(config.googleSheetWebAppUrl,{
     method:"POST",
     mode:"no-cors",
     headers:{"Content-Type":"text/plain;charset=utf-8"},
     body:JSON.stringify({type,data})
-  }).catch(e=>console.warn("Gagal mengirim ke Spreadsheet:",e));
+  }).then(()=>({status:true})).catch(e=>{console.warn("Gagal mengirim ke Spreadsheet:",e);throw e});
+}
+
+async function refreshAdminData(){
+  try{
+    await syncFromSpreadsheet();
+    return true;
+  }catch(e){
+    console.warn("Refresh data admin gagal:",e);
+    return false;
+  }
 }
 
 function syncFromSpreadsheet(){
@@ -140,11 +150,36 @@ function syncFromSpreadsheet(){
         usedAt:x["Waktu Digunakan"]||""
       })).filter(x=>x.code);
 
+      const results=(d.results||[]).map(x=>{
+        let details=[];
+        try{details=JSON.parse(x["Detail JSON"]||"[]")}catch{}
+        return {
+          id:String(x["ID Hasil"]||"").trim(),
+          date:String(x.Tanggal||""),
+          studentId:String(x["ID Siswa"]||""),
+          name:String(x.Nama||""),
+          className:String(x.Kelas||""),
+          token:String(x.Token||""),
+          exam:String(x.Ujian||""),
+          score:Number(x.Nilai)||0,
+          correct:Number(x.Benar)||0,
+          wrong:Number(x.Salah)||0,
+          blank:Number(x.Kosong)||0,
+          total:Number(x.Total)||0,
+          totalWeight:Number(x["Total Bobot"])||0,
+          earnedWeight:Number(x["Bobot Diperoleh"])||0,
+          kkm:Number(x.KKM)||config.kkm,
+          passed:String(x.Status||"").toUpperCase()==="LULUS",
+          details
+        };
+      }).filter(x=>x.id);
+
       save("studentsDB",students);
       save("questionsDB",questions);
       save("tokensDB",tokens);
+      save("resultsDB",results);
       localStorage.setItem("dbLastSync",new Date().toISOString());
-      resolve({students,questions,tokens});
+      resolve({students,questions,tokens,results});
     };
 
     script.onerror=()=>{
@@ -161,7 +196,7 @@ function syncStartup(){
   const el=document.getElementById("syncStatus");
   if(el)el.textContent="Menghubungkan ke Google Spreadsheet...";
   return syncFromSpreadsheet().then(d=>{
-    if(el)el.textContent=`✓ Terhubung ke Spreadsheet • ${d.students.length} siswa • ${d.questions.length} soal • ${d.tokens.length} token`;
+    if(el)el.textContent=`✓ Spreadsheet terhubung • ${d.students.length} siswa • ${d.questions.length} soal • ${d.tokens.length} token • ${d.results?.length||0} hasil`;
     // Data baru sudah masuk localStorage; render ulang agar perangkat HP langsung memakai data terbaru.
     try{ render(); }catch(e){ console.warn("Render setelah sync gagal:",e); }
     return d;
@@ -641,19 +676,45 @@ function renderAdminLogin(app){
 }
 
 function adminNav(){
-  const tabs=[["dashboard","Dashboard"],["students","Data Siswa"],["questions","Bank Soal"],["tokens","Token"],["reports","Laporan"]];
-  return tabs.map(([id,label])=>`<button data-tab="${id}" class="px-3 py-2 rounded-lg font-semibold ${state.adminTab===id?"tab-active":""}">${label}</button>`).join("");
+  const tabs=[
+    ["dashboard","📊 Dashboard"],
+    ["students","👨‍🎓 Data Siswa"],
+    ["questions","📝 Bank Soal"],
+    ["tokens","🔑 Token"],
+    ["reports","📋 Laporan"]
+  ];
+  return `<nav class="flex flex-wrap gap-2 items-center">${tabs.map(([id,label])=>`<button type="button" data-tab="${id}" class="px-3 py-2 rounded-lg font-semibold border border-white/10 hover:bg-white/10 ${state.adminTab===id?"tab-active":""}">${label}</button>`).join("")}</nav>`;
 }
+
+async function openAdminTab(tab){
+  state.adminTab=tab;
+  const app=document.getElementById("app");
+  renderAdmin(app);
+  if(tab==="reports"){
+    const c=document.getElementById("adminContent");
+    if(c)c.innerHTML=`<div class="bg-white rounded-xl shadow p-8 text-center"><div class="text-3xl mb-2">⏳</div><b>Memuat laporan...</b><p class="text-sm text-slate-500">Mengambil hasil ujian terbaru dari Spreadsheet.</p></div>`;
+    const ok=await refreshAdminData();
+    if(ok && state.screen==="admin" && state.adminTab==="reports")renderAdmin(document.getElementById("app"));
+  }
+}
+
 function renderAdmin(app){
-  app.innerHTML=`<div class="min-h-full bg-slate-100"><header class="bg-slate-900 text-white p-4"><div class="max-w-7xl mx-auto flex flex-wrap justify-between gap-3 items-center"><div><h1 class="text-xl font-bold">Panel Admin Ujian</h1><p class="text-slate-300 text-sm">${esc(config.school_name)}</p></div><div class="flex flex-wrap gap-2">${adminNav()}<button id="logout" class="px-3 py-2 rounded-lg bg-red-600">Keluar</button></div></div></header><main class="max-w-7xl mx-auto p-4" id="adminContent"></main></div>`;
-  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{state.adminTab=b.dataset.tab;renderAdmin(document.getElementById("app"))});
-  document.getElementById("logout").onclick=()=>{state.screen="start";render()};
+  app.innerHTML=`<div class="min-h-full bg-slate-100"><header class="bg-slate-900 text-white p-4 sticky top-0 z-20 shadow"><div class="max-w-7xl mx-auto flex flex-wrap justify-between gap-3 items-center"><div><h1 class="text-xl font-bold">Panel Admin Ujian</h1><p class="text-slate-300 text-sm">${esc(config.school_name)}</p></div><div class="flex flex-wrap gap-2 items-center">${adminNav()}<button type="button" id="refreshAdmin" class="px-3 py-2 rounded-lg bg-emerald-600">🔄 Refresh</button><button type="button" id="logout" class="px-3 py-2 rounded-lg bg-red-600">Keluar</button></div></div></header><main class="max-w-7xl mx-auto p-4" id="adminContent"></main></div>`;
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>openAdminTab(b.dataset.tab));
+  document.getElementById("logout").onclick=()=>{state.screen="start";state.adminTab="dashboard";render()};
+  document.getElementById("refreshAdmin").onclick=async()=>{
+    const btn=document.getElementById("refreshAdmin");
+    btn.disabled=true;btn.textContent="⏳ Memuat...";
+    await refreshAdminData();
+    if(state.screen==="admin")renderAdmin(document.getElementById("app"));
+  };
   const c=document.getElementById("adminContent");
   if(state.adminTab==="dashboard")renderDashboard(c);
-  if(state.adminTab==="students")renderStudents(c);
-  if(state.adminTab==="questions")renderQuestions(c);
-  if(state.adminTab==="tokens")renderTokens(c);
-  if(state.adminTab==="reports")renderReports(c);
+  else if(state.adminTab==="students")renderStudents(c);
+  else if(state.adminTab==="questions")renderQuestions(c);
+  else if(state.adminTab==="tokens")renderTokens(c);
+  else if(state.adminTab==="reports")renderReports(c);
+  else {state.adminTab="dashboard";renderDashboard(c)}
 }
 
 function card(title,value,sub=""){return `<div class="bg-white rounded-xl shadow p-5"><p class="text-slate-500">${title}</p><b class="text-3xl">${value}</b><p class="text-xs text-slate-500">${sub}</p></div>`}
@@ -965,13 +1026,18 @@ function createToken(){
 }
 
 function renderReports(c){
-  const r=getResults(),avg=r.length?Math.round(r.reduce((a,x)=>a+x.score,0)/r.length):0;
-  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Laporan Lengkap</h2><p class="text-slate-600">Nilai, benar, salah, kosong, KKM, status, dan detail jawaban.</p></div><button id="exportR" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Laporan Word</button></div>
-  <div class="grid md:grid-cols-4 gap-4 mb-5">${card("Peserta",r.length)}${card("Rata-rata",avg)}${card("Lulus",r.filter(x=>x.passed).length,`KKM ${config.kkm}`)}${card("Belum Lulus",r.filter(x=>!x.passed).length)}</div>
-  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-2">Tanggal</th><th class="p-2 text-left">Nama</th><th class="p-2">Kelas</th><th class="p-2">Nilai</th><th class="p-2">Benar</th><th class="p-2">Salah</th><th class="p-2">Kosong</th><th class="p-2">KKM</th><th class="p-2">Status</th><th class="p-2">Detail</th></tr></thead><tbody>${r.slice().reverse().map(x=>`<tr class="border-t"><td class="p-2">${esc(x.date)}</td><td class="p-2">${esc(x.name)}</td><td class="p-2">${esc(x.className)}</td><td class="p-2 font-bold">${x.score}</td><td class="p-2 text-green-600">${x.correct}</td><td class="p-2 text-red-600">${x.wrong}</td><td class="p-2 text-amber-600">${x.blank}</td><td class="p-2">${x.kkm}</td><td class="p-2 font-bold ${x.passed?"text-green-600":"text-red-600"}">${x.passed?"LULUS":"BELUM"}</td><td class="p-2"><button data-detail="${x.id}" class="text-blue-600">Lihat</button></td></tr>`).join("")}</tbody></table></div>`;
+  const r=getResults();
+  const avg=r.length?Math.round(r.reduce((a,x)=>a+Number(x.score||0),0)/r.length):0;
+  const passed=r.filter(x=>x.passed===true || String(x.passed).toLowerCase()==="true").length;
+  const failed=r.length-passed;
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-3 mb-4"><div><h2 class="text-2xl font-bold">Laporan Ujian</h2><p class="text-slate-600">Data hasil ujian yang tersimpan di Spreadsheet.</p></div><div class="flex gap-2"><button id="refreshReport" class="bg-emerald-600 text-white px-4 py-2 rounded-lg">🔄 Refresh</button><button id="exportR" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Export Laporan Word</button></div></div>
+  <div class="grid sm:grid-cols-2 md:grid-cols-4 gap-4 mb-5">${card("Peserta",r.length)}${card("Rata-rata",avg)}${card("Lulus",passed,`KKM ${config.kkm}`)}${card("Belum Lulus",failed)}</div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-2">Tanggal</th><th class="p-2 text-left">Nama</th><th class="p-2">Kelas</th><th class="p-2">Nilai</th><th class="p-2">Benar</th><th class="p-2">Salah</th><th class="p-2">Kosong</th><th class="p-2">KKM</th><th class="p-2">Status</th><th class="p-2">Detail</th></tr></thead><tbody>${r.length?r.slice().reverse().map(x=>`<tr class="border-t"><td class="p-2">${esc(x.date)}</td><td class="p-2">${esc(x.name)}</td><td class="p-2">${esc(x.className)}</td><td class="p-2 font-bold">${Number(x.score||0)}</td><td class="p-2 text-green-600">${Number(x.correct||0)}</td><td class="p-2 text-red-600">${Number(x.wrong||0)}</td><td class="p-2 text-amber-600">${Number(x.blank||0)}</td><td class="p-2">${Number(x.kkm||config.kkm)}</td><td class="p-2 font-bold ${x.passed?"text-green-600":"text-red-600"}">${x.passed?"LULUS":"BELUM"}</td><td class="p-2"><button data-detail="${esc(x.id)}" class="text-blue-600 font-semibold">Lihat</button></td></tr>`).join(""):`<tr><td colspan="10" class="p-8 text-center text-slate-500">Belum ada hasil ujian tersimpan.</td></tr>`}</tbody></table></div>`;
   document.getElementById("exportR").onclick=()=>exportReports(r);
-  document.querySelectorAll("[data-detail]").forEach(b=>b.onclick=()=>showResultDetail(r.find(x=>x.id===b.dataset.detail)));
+  document.getElementById("refreshReport").onclick=async()=>{await refreshAdminData();renderAdmin(document.getElementById("app"))};
+  document.querySelectorAll("[data-detail]").forEach(b=>b.onclick=()=>showResultDetail(r.find(x=>String(x.id)===String(b.dataset.detail))));
 }
+
 async function exportReports(r){
   const p=[];
   r.slice().reverse().forEach((x,i)=>{
