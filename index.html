@@ -266,14 +266,25 @@ function esc(v){return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&l
 function shuffle(a){a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function formatTime(s){const m=Math.floor(s/60),sec=s%60;return `${m}:${String(sec).padStart(2,"0")}`}
 function now(){return new Date().toLocaleString("id-ID")}
-const TOKEN_VALID_MINUTES=10;
+const DEFAULT_TOKEN_MINUTES=60;
 function tokenExpired(t){
-  if(!t?.createdAt)return true;
-  const raw=String(t.createdAt).trim();
-  let d=new Date(raw);
-  const m=raw.match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
-  if(m)d=new Date(Number(m[3]),Number(m[2])-1,Number(m[1]),Number(m[4]),Number(m[5]),Number(m[6]));
-  return !Number.isFinite(d.getTime()) || (Date.now()-d.getTime()) >= TOKEN_VALID_MINUTES*60*1000;
+  if(!t)return true;
+  if(t.expiresAt){
+    const exp=new Date(String(t.expiresAt));
+    if(Number.isFinite(exp.getTime())) return Date.now() >= exp.getTime();
+  }
+  if(t.createdAt){
+    const raw=String(t.createdAt).trim();
+    let d=new Date(raw);
+    const m=raw.match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/);
+    if(m)d=new Date(Number(m[3]),Number(m[2])-1,Number(m[1]),Number(m[4]),Number(m[5]),Number(m[6]));
+    if(Number.isFinite(d.getTime())){
+      const minutes=Math.max(1,Number(t.durationMinutes)||DEFAULT_TOKEN_MINUTES);
+      return (Date.now()-d.getTime()) >= minutes*60*1000;
+    }
+  }
+  // Token baru/legacy tanpa waktu valid tidak langsung dianggap kedaluwarsa.
+  return false;
 }
 function load(key,fallback){try{const x=JSON.parse(localStorage.getItem(key));return x??fallback}catch{return fallback}}
 function save(key,val){localStorage.setItem(key,JSON.stringify(val))}
@@ -989,46 +1000,37 @@ async function importWordQuestions(file){
 
 function renderTokens(c){
   const t=getTokens(),s=getStudents();
-  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Token berlaku <b>10 menit sejak dibuat</b>. Token tidak hangus karena dipakai; setelah 10 menit buat token baru.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
-  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">Token</th><th class="p-3">Untuk</th><th class="p-3">Status</th><th class="p-3">Dibuat</th><th class="p-3">Aksi</th></tr></thead><tbody>${t.slice().reverse().map(x=>{const st=s.find(a=>a.id===x.studentId);return `<tr class="border-t"><td class="p-3 font-mono font-bold">${esc(x.code)}</td><td class="p-3">${st?esc(st.name+" ("+st.className+")"):"Umum"}</td><td class="p-3">${tokenExpired(x)?'<span class="text-orange-600">Kedaluwarsa</span>':x.active?'<span class="text-green-600">Aktif • 10 menit</span>':'<span class="text-red-600">Nonaktif</span>'}</td><td class="p-3">${esc(x.createdAt)}</td><td class="p-3"><button data-toggle="${x.code}" class="text-blue-600 mr-2">${x.active?"Nonaktifkan":"Aktifkan"}</button><button data-delt="${x.code}" class="text-red-600">Hapus</button></td></tr>`}).join("")}</tbody></table></div>`;
+  c.innerHTML=`<div class="flex flex-wrap justify-between gap-2 mb-4"><div><h2 class="text-2xl font-bold">Token Ujian</h2><p class="text-slate-600">Atur sendiri durasi token saat membuat token. Token tidak langsung kadaluarsa setelah disimpan.</p></div><div class="flex gap-2"><button id="newToken" class="bg-blue-600 text-white px-4 py-2 rounded-lg">+ Tambah Token</button><button id="clearTokens" class="bg-red-600 text-white px-4 py-2 rounded-lg">Hapus Semua Token</button></div></div>
+  <div class="bg-white rounded-xl shadow overflow-auto"><table class="w-full text-sm"><thead class="bg-slate-200"><tr><th class="p-3">Token</th><th class="p-3">Untuk</th><th class="p-3">Status</th><th class="p-3">Dibuat</th><th class="p-3">Kadaluarsa</th><th class="p-3">Aksi</th></tr></thead><tbody>${t.slice().reverse().map(x=>{const st=s.find(a=>a.id===x.studentId);const expired=tokenExpired(x);const exp=x.expiresAt?new Date(x.expiresAt):null;const expText=exp&&Number.isFinite(exp.getTime())?exp.toLocaleString("id-ID"):"-";return `<tr class="border-t"><td class="p-3 font-mono font-bold">${esc(x.code)}</td><td class="p-3">${st?esc(st.name+" ("+st.className+")"):"Umum"}</td><td class="p-3">${expired?'<span class="text-orange-600 font-bold">Kedaluwarsa</span>':x.active?`<span class="text-green-600 font-bold">Aktif • ${Number(x.durationMinutes)||DEFAULT_TOKEN_MINUTES} menit</span>`:'<span class="text-red-600">Nonaktif</span>'}</td><td class="p-3">${esc(x.createdAt||"-")}</td><td class="p-3">${esc(expText)}</td><td class="p-3"><button data-toggle="${esc(x.code)}" class="text-blue-600 mr-2">${x.active?"Nonaktifkan":"Aktifkan"}</button><button data-delt="${esc(x.code)}" class="text-red-600">Hapus</button></td></tr>`}).join("")}</tbody></table></div>`;
   document.getElementById("newToken").onclick=()=>createToken();
   document.getElementById("clearTokens").onclick=()=>{
-    if(confirm("Hapus semua token ujian?")){
-      save("tokensDB",[]);
-      renderAdmin(document.getElementById("app"));
-    }
+    if(confirm("Hapus semua token ujian?")){save("tokensDB",[]);renderAdmin(document.getElementById("app"));}
   };
-  document.querySelectorAll("[data-toggle]").forEach(b=>b.onclick=()=>{const a=getTokens();const x=a.find(v=>v.code===b.dataset.toggle);x.active=!x.active;save("tokensDB",a);renderAdmin(document.getElementById("app"))});
+  document.querySelectorAll("[data-toggle]").forEach(b=>b.onclick=()=>{const a=getTokens();const x=a.find(v=>v.code===b.dataset.toggle);if(!x)return;x.active=!x.active;save("tokensDB",a);apiWrite("token",x).catch(()=>{});renderAdmin(document.getElementById("app"))});
   document.querySelectorAll("[data-delt]").forEach(b=>b.onclick=()=>{if(confirm("Hapus token?")){save("tokensDB",getTokens().filter(x=>x.code!==b.dataset.delt));renderAdmin(document.getElementById("app"))}});
 }
-function createToken(){
-  const codeInput=prompt(
-    "MASUKKAN TOKEN UJIAN UMUM\n\nToken ini berlaku untuk semua siswa.\nContoh: UJIAN7A-001",
-    ""
-  );
-  if(codeInput===null)return;
 
+function createToken(){
+  const codeInput=prompt("MASUKKAN TOKEN UJIAN\n\nContoh: UJIAN7A-001","UJIAN7A-001");
+  if(codeInput===null)return;
   const code=normalizeToken(codeInput);
   if(!code)return alert("Token tidak boleh kosong.");
-
   const tokens=getTokens();
-  if(tokens.some(t=>normalizeToken(t.code)===code)){
-    return alert("Token tersebut sudah ada. Gunakan token lain.");
-  }
+  if(tokens.some(t=>normalizeToken(t.code)===code))return alert("Token tersebut sudah ada. Gunakan token lain.");
 
-  const token={
-    code,
-    active:true,
-    used:false,
-    studentId:null,
-    createdAt:now()
-  };
+  const minutesInput=prompt("DURASI TOKEN\n\nMasukkan masa berlaku dalam menit.\nContoh: 30, 60, 120","60");
+  if(minutesInput===null)return;
+  const minutes=Math.max(1,Number(minutesInput)||DEFAULT_TOKEN_MINUTES);
+  const created=new Date();
+  const expires=new Date(created.getTime()+minutes*60*1000);
 
+  const token={code,active:true,used:false,studentId:null,createdAt:created.toISOString(),expiresAt:expires.toISOString(),durationMinutes:minutes};
   tokens.push(token);
   save("tokensDB",tokens);
-  apiWrite("token",token);
 
-  alert("Token umum berhasil dibuat: "+code);
+  apiWrite("token",token).catch(e=>console.warn("Token lokal tersimpan, sinkronisasi gagal:",e));
+
+  alert("TOKEN BERHASIL DIBUAT\n\nToken: "+code+"\nDurasi: "+minutes+" menit\nDibuat: "+created.toLocaleString("id-ID")+"\nKadaluarsa: "+expires.toLocaleString("id-ID"));
   renderAdmin(document.getElementById("app"));
 }
 
